@@ -11,12 +11,34 @@ public struct GPTKEvaluationEnvironment: Sendable {
 public enum GPTKInstaller {
     private static let volumes = URL(fileURLWithPath: "/Volumes", isDirectory: true)
 
-    public static func availableEvaluationVersion(downloads: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)) -> String? {
-        var versions: [String] = []
-        if let mounted = findMountedEvaluationEnvironment() { versions.append(mounted.version) }
+    public static func availableEvaluationVersions(downloads: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)) -> [String] {
+        let mounted = volumeRoots().compactMap { root -> String? in
+            let libraries = root.appendingPathComponent("redist/lib", isDirectory: true)
+            guard validRedistributables(at: libraries) else { return nil }
+            let prefix = "Evaluation environment for Windows games "
+            return root.lastPathComponent.hasPrefix(prefix) ? String(root.lastPathComponent.dropFirst(prefix.count)) : root.lastPathComponent
+        }
         let images = evaluationImages(in: downloads) + nestedEvaluationImages(in: inMountedToolkitVolumes())
-        versions.append(contentsOf: images.compactMap { versionFromImageName($0.deletingPathExtension().lastPathComponent) })
-        return newestVersion(in: versions)
+        return orderedAvailableVersions(from: images, mountedVersions: mounted)
+    }
+
+    public static func availableEvaluationVersion(downloads: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)) -> String? {
+        availableEvaluationVersions(downloads: downloads).first
+    }
+
+    static func orderedAvailableVersions(from images: [URL], mountedVersions: [String] = []) -> [String] {
+        var seen = Set<String>()
+        let versions = mountedVersions + images.compactMap { versionFromImageName($0.deletingPathExtension().lastPathComponent) }
+        return versions.filter { seen.insert($0.lowercased()).inserted }.sorted(by: isNewerVersion)
+    }
+
+    static func evaluationImages(matchingVersion version: String?, from images: [URL]) -> [URL] {
+        let matching = images.filter { image in
+            guard let version else { return true }
+            return versionFromImageName(image.deletingPathExtension().lastPathComponent)?
+                .localizedStandardCompare(version) == .orderedSame
+        }
+        return matching.sorted(by: imageIsNewer)
     }
 
     /// Orders GPTK labels naturally, including beta numbers, and ranks a final
@@ -88,11 +110,15 @@ public enum GPTKInstaller {
     }
 
     /// Mounts only GPTK-named disk images read-only. It never launches files from an image.
-    public static func findOrMountEvaluationEnvironment(downloads: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)) async throws -> GPTKEvaluationEnvironment? {
-        let requestedVersion = availableEvaluationVersion(downloads: downloads)
+    public static func findOrMountEvaluationEnvironment(
+        downloads: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true),
+        requestedVersion: String? = nil
+    ) async throws -> GPTKEvaluationEnvironment? {
+        let requestedVersion = requestedVersion ?? availableEvaluationVersion(downloads: downloads)
         if let mounted = findMountedEvaluationEnvironment(version: requestedVersion) { return mounted }
         let preexistingVolumes = Set(volumeRoots().map { $0.standardizedFileURL.path })
-        let candidates = (evaluationImages(in: downloads) + nestedEvaluationImages(in: inMountedToolkitVolumes())).sorted(by: imageIsNewer)
+        let candidates = evaluationImages(matchingVersion: requestedVersion,
+            from: evaluationImages(in: downloads) + nestedEvaluationImages(in: inMountedToolkitVolumes()))
         var attempted = Set<String>()
         for image in candidates where attempted.insert(image.standardizedFileURL.path).inserted {
             _ = try? await ProcessRunner.capture(URL(fileURLWithPath: "/usr/bin/hdiutil"), ["attach", "-readonly", "-nobrowse", "-noautoopen", "-quiet", image.path])

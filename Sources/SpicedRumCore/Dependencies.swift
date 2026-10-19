@@ -49,6 +49,7 @@ public enum Dependencies {
 
     public static func parseListAll(_ output: String) -> [WindowsDependency] {
         let verbPattern = try! NSRegularExpression(pattern: "^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+        let linuxGraphicsPattern = try! NSRegularExpression(pattern: "^(dxvk([0-9]+|_nvapi[0-9]*|_async)?|vkd3d(-proton)?)$")
         var category = "components"
         var seen = Set<String>()
         var results: [WindowsDependency] = []
@@ -63,9 +64,13 @@ public enum Dependencies {
             guard let verb = fields.first else { continue }
             let rawValue = String(verb)
             let range = NSRange(rawValue.startIndex..<rawValue.endIndex, in: rawValue)
-            guard verbPattern.firstMatch(in: rawValue, range: range) != nil,
-                  seen.insert(rawValue.lowercased()).inserted else { continue }
+            guard verbPattern.firstMatch(in: rawValue, range: range) != nil else { continue }
             let title = fields.count > 1 ? String(fields[1]).trimmingCharacters(in: .whitespacesAndNewlines) : rawValue
+            let normalizedID = rawValue.lowercased()
+            let idRange = NSRange(normalizedID.startIndex..<normalizedID.endIndex, in: normalizedID)
+            guard linuxGraphicsPattern.firstMatch(in: normalizedID, range: idRange) == nil,
+                  !title.localizedCaseInsensitiveContains("linux"),
+                  seen.insert(normalizedID).inserted else { continue }
             results.append(WindowsDependency(rawValue: rawValue, title: title, category: category))
         }
         for dependency in recommended where !seen.contains(dependency.rawValue) {

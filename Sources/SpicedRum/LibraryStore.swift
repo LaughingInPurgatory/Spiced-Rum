@@ -17,8 +17,10 @@ final class LibraryStore: ObservableObject {
     @Published var setupProgress: Double?
     @Published var waitingForHomebrew = false
     @Published var detectedGPTK: Runtime?
+    @Published var availableGPTKHosts: [Runtime] = []
     @Published var gptkBetaAvailable = false
     @Published var gptkBetaVersion: String?
+    @Published var gptkEvaluationVersions: [String] = []
     var support: URL { catalogURL.deletingLastPathComponent() }
     var setupLog: URL { support.appendingPathComponent("setup.log") }
     private let catalogURL: URL
@@ -28,7 +30,9 @@ final class LibraryStore: ObservableObject {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Spiced-Rum", isDirectory: true)
         catalogURL = support.appendingPathComponent("library.json")
         catalog = Catalog(defaultLocation: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Spiced-Rum Shotglasses", isDirectory: true))
-        detectedGPTK = RuntimeDiscovery.appleGamePortingToolkit()
+        availableGPTKHosts = RuntimeDiscovery.appleGamePortingToolkits()
+        detectedGPTK = availableGPTKHosts.first
+        gptkEvaluationVersions = GPTKInstaller.availableEvaluationVersions()
         do {
             try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: catalogURL.path) {
@@ -128,8 +132,10 @@ final class LibraryStore: ObservableObject {
     }
 
     func discoverAndSetUpAppleGPTK() {
-        detectedGPTK = RuntimeDiscovery.appleGamePortingToolkit()
-        gptkBetaVersion = GPTKInstaller.availableEvaluationVersion()
+        availableGPTKHosts = RuntimeDiscovery.appleGamePortingToolkits()
+        detectedGPTK = availableGPTKHosts.first
+        gptkEvaluationVersions = GPTKInstaller.availableEvaluationVersions()
+        gptkBetaVersion = gptkEvaluationVersions.first
         gptkBetaAvailable = gptkBetaVersion != nil
         guard let runtime = detectedGPTK else { return }
         let path = runtime.executable.resolvingSymlinksInPath().standardizedFileURL.path
@@ -143,15 +149,22 @@ final class LibraryStore: ObservableObject {
         setUpAppleGPTK(runtime)
     }
 
-    func setUpAppleGPTK(_ candidate: Runtime? = nil) {
+    func setUpAppleGPTK(_ candidate: Runtime? = nil, evaluationVersion: String? = nil) {
         guard !setupBusy else { return }
-        guard let candidate = candidate ?? detectedGPTK else {
-            setupMessage = "Apple Game Porting Toolkit was not found. Install its evaluation environment, then choose Check again."
+        let selectedVersion = evaluationVersion ?? GPTKInstaller.availableEvaluationVersion()
+        let exactCandidate = selectedVersion.flatMap { version in
+            availableGPTKHosts.first { $0.version.localizedStandardCompare(version) == .orderedSame }
+        }
+        let selectedCandidate = exactCandidate ?? (evaluationVersion == nil ? candidate ?? detectedGPTK : nil)
+        guard let candidate = selectedCandidate else {
+            setupMessage = selectedVersion == nil
+                ? "Apple Game Porting Toolkit was not found. Install its evaluation environment, then choose Check again."
+                : "Install the Apple Game Porting Toolkit Wine host matching GPTK \(selectedVersion ?? "") before installing this D3DMetal version."
             return
         }
         let path = candidate.executable.resolvingSymlinksInPath().standardizedFileURL.path
-        let betaAvailable = GPTKInstaller.hasDownloadedOrMountedEvaluationEnvironment()
-        let betaName = GPTKInstaller.availableEvaluationVersion().map { "Apple GPTK \($0)" }
+        let betaAvailable = selectedVersion != nil
+        let betaName = selectedVersion.map { "Apple GPTK \($0)" }
         let betaReady = betaName.map { name in catalog.runtimes.contains { $0.name == name && $0.managedRoot != nil } } ?? false
         let baseReady = catalog.runtimes.contains(where: { $0.executable.resolvingSymlinksInPath().standardizedFileURL.path == path })
         guard betaAvailable ? !betaReady : !baseReady else {
@@ -161,7 +174,7 @@ final class LibraryStore: ObservableObject {
         setupBusy = true
         error = nil
         setupMessage = betaAvailable
-            ? "The downloaded GPTK evaluation image was found. Preparing a private GPTK beta runtime and leaving Apple's installed app unchanged…"
+            ? "The GPTK \(selectedVersion ?? "") evaluation image was found. Preparing a separate runtime and leaving Apple's installed app unchanged…"
             : "Apple Game Porting Toolkit found. Checking Wine, D3DMetal, and a temporary Windows x64 environment…"
         setupProgress = nil
         Task {
@@ -171,9 +184,9 @@ final class LibraryStore: ObservableObject {
                     throw RumError.message("Apple Game Porting Toolkit uses Intel Wine. Set up Rosetta 2 in Runtimes & setup, then retry GPTK setup.")
                 }
                 var runtime: Runtime
-                if let evaluation = try await GPTKInstaller.findOrMountEvaluationEnvironment() {
+                if let evaluation = try await GPTKInstaller.findOrMountEvaluationEnvironment(requestedVersion: selectedVersion) {
                     do {
-                        setupMessage = "Copying Wine's core and adding GPTK's matching beta graphics libraries. This may take a few minutes…"
+                        setupMessage = "Copying Wine's core and adding GPTK \(evaluation.version) graphics libraries. This may take a few minutes…"
                         runtime = try await GPTKInstaller.install(evaluation, using: candidate, into: support.appendingPathComponent("Engines", isDirectory: true))
                         await GPTKInstaller.unmountIfMountedBySpicedRum(evaluation)
                     } catch {
@@ -181,6 +194,9 @@ final class LibraryStore: ObservableObject {
                         throw error
                     }
                 } else {
+                    guard selectedVersion == nil else {
+                        throw RumError.message("The GPTK \(selectedVersion ?? "") evaluation image could not be mounted. Keep the matching disk image in Downloads and retry.")
+                    }
                     guard !baseReady else {
                         throw RumError.message("GPTK is already registered, but the downloaded evaluation image could not be mounted. Open the downloaded image in Finder, then choose Check again.")
                     }

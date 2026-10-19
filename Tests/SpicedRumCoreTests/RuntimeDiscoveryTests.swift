@@ -8,6 +8,18 @@ final class RuntimeDiscoveryTests: XCTestCase {
         XCTAssertNil(GPTKInstaller.versionFromImageName("unrelated image"))
     }
 
+    func testListsAndTargetsEachAvailableGPTKEvaluationVersion() {
+        let images = [
+            URL(fileURLWithPath: "/tmp/Evaluation_environment_for_Windows_games_4.0_beta_3.dmg"),
+            URL(fileURLWithPath: "/tmp/Evaluation_environment_for_Windows_games_4.0_beta_10.dmg"),
+            URL(fileURLWithPath: "/tmp/unrelated.dmg")
+        ]
+        XCTAssertEqual(GPTKInstaller.orderedAvailableVersions(from: images, mountedVersions: ["4.0 beta 3", "3.9"]),
+                       ["4.0 beta 10", "4.0 beta 3", "3.9"])
+        XCTAssertEqual(GPTKInstaller.evaluationImages(matchingVersion: "4.0 beta 3", from: images).map(\.lastPathComponent),
+                       ["Evaluation_environment_for_Windows_games_4.0_beta_3.dmg"])
+    }
+
     func testChoosesNewestEvaluationImageIncludingBetaNumberAndFinalRelease() {
         XCTAssertEqual(GPTKInstaller.newestVersion(in: ["4.0 beta 3", "4.0 beta 10", "3.9"]), "4.0 beta 10")
         XCTAssertEqual(GPTKInstaller.newestVersion(in: ["4.0 beta 10", "4.0", "3.9"]), "4.0")
@@ -37,6 +49,7 @@ final class RuntimeDiscoveryTests: XCTestCase {
         let runtime = try XCTUnwrap(RuntimeDiscovery.appleGamePortingToolkit(in: [root]))
         XCTAssertTrue(runtime.executable.path.contains("beta 10.app"))
         XCTAssertEqual(runtime.version, "4.0 beta 10")
+        XCTAssertEqual(RuntimeDiscovery.appleGamePortingToolkits(in: [root]).map(\.version), ["4.0 beta 10", "4.0 beta 3"])
     }
 
     func testFindsInstalledAppleGPTKBundleAndItsBundledMediaRuntime() throws {

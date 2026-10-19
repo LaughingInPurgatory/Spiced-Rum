@@ -4,6 +4,12 @@ public enum RuntimeDiscovery {
     /// Finds Apple's installed Game Porting Toolkit Wine runtime without requiring
     /// users to locate its internal wine64 launcher by hand.
     public static func appleGamePortingToolkit(in searchDirectories: [URL]? = nil) -> Runtime? {
+        appleGamePortingToolkits(in: searchDirectories).first
+    }
+
+    /// Finds every installed Apple GPTK Wine host, newest version first. Keeping
+    /// these paired with their evaluation image prevents mixing D3DMetal versions.
+    public static func appleGamePortingToolkits(in searchDirectories: [URL]? = nil) -> [Runtime] {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
         let roots = searchDirectories ?? [
@@ -31,22 +37,27 @@ public enum RuntimeDiscovery {
                 if left != right { return GPTKInstaller.isNewerVersion(left, than: right) }
                 return $0.path.localizedStandardCompare($1.path) == .orderedDescending
             }
-        var runtimeRoots = rankedApps.map { $0.appendingPathComponent("Contents/Resources/wine", isDirectory: true) }
-        runtimeRoots.append(contentsOf: roots.filter { $0.pathExtension != "app" })
-        for wineRoot in runtimeRoots {
-            let launchers = [wineRoot.appendingPathComponent("bin/wine64"), wineRoot.appendingPathComponent("bin/wine")]
-            guard let launcher = launchers.first(where: { fm.isExecutableFile(atPath: $0.path) }) else { continue }
-            let metal = [
-                wineRoot.appendingPathComponent("lib/external/D3DMetal.framework", isDirectory: true),
-                wineRoot.appendingPathComponent("lib/D3DMetal.framework", isDirectory: true)
-            ].contains { fm.fileExists(atPath: $0.appendingPathComponent("Versions/Current/D3DMetal").path)
-                || fm.fileExists(atPath: $0.appendingPathComponent("D3DMetal").path) }
-            guard metal,
-                  fm.isExecutableFile(atPath: launcher.deletingLastPathComponent().appendingPathComponent("wineserver").path) else { continue }
-            let app = rankedApps.first { $0.appendingPathComponent("Contents/Resources/wine", isDirectory: true).standardizedFileURL == wineRoot.standardizedFileURL }
-            return Runtime(name: "Apple Game Porting Toolkit", executable: launcher, useRosetta: true, d3dMetal: true, version: app.map(bundleVersion(in:)) ?? "")
+
+        var runtimes = rankedApps.compactMap { app in
+            runtime(at: app.appendingPathComponent("Contents/Resources/wine", isDirectory: true), version: bundleVersion(in: app))
         }
-        return nil
+        runtimes.append(contentsOf: roots.filter { $0.pathExtension != "app" }.compactMap { runtime(at: $0, version: "") })
+        var seen = Set<String>()
+        return runtimes.filter { seen.insert($0.executable.standardizedFileURL.path).inserted }
+    }
+
+    private static func runtime(at wineRoot: URL, version: String) -> Runtime? {
+        let fm = FileManager.default
+        let launchers = [wineRoot.appendingPathComponent("bin/wine64"), wineRoot.appendingPathComponent("bin/wine")]
+        guard let launcher = launchers.first(where: { fm.isExecutableFile(atPath: $0.path) }) else { return nil }
+        let metal = [
+            wineRoot.appendingPathComponent("lib/external/D3DMetal.framework", isDirectory: true),
+            wineRoot.appendingPathComponent("lib/D3DMetal.framework", isDirectory: true)
+        ].contains { fm.fileExists(atPath: $0.appendingPathComponent("Versions/Current/D3DMetal").path)
+            || fm.fileExists(atPath: $0.appendingPathComponent("D3DMetal").path) }
+        guard metal,
+              fm.isExecutableFile(atPath: launcher.deletingLastPathComponent().appendingPathComponent("wineserver").path) else { return nil }
+        return Runtime(name: "Apple Game Porting Toolkit", executable: launcher, useRosetta: true, d3dMetal: true, version: version)
     }
 
     private static func bundleVersion(in app: URL) -> String {

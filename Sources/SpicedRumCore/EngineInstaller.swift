@@ -110,12 +110,24 @@ public enum EngineInstaller {
         return dxvkReleasePage(assets, page: page, link: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Link"))
     }
 
+    public static func supportsMacOSDXVK(_ runtime: Runtime) -> Bool {
+        guard runtime.useRosetta, runtime.managedRoot != nil else { return false }
+        let wineRoot = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
+        return FileManager.default.fileExists(atPath: wineRoot.appendingPathComponent("lib/libMoltenVK.dylib").path)
+    }
+
+    static func isMacOSDXVKAsset(_ asset: EngineAsset) -> Bool {
+        let name = asset.name.lowercased()
+        let path = asset.browser_download_url.path.lowercased()
+        return asset.browser_download_url.host?.lowercased() == "github.com"
+            && path.hasPrefix("/gcenx/dxvk-macos/releases/download/")
+            && name.contains("dxvk-macos") && name.hasSuffix(".tar.gz")
+            && !name.contains("source") && !name.contains("linux")
+    }
+
     static func dxvkReleasePage(_ assets: [EngineAsset], page: Int, link: String?) -> EngineReleasePage {
         let pageResult = releasePage(assets, page: page, link: link)
-        return EngineReleasePage(assets: pageResult.assets.filter {
-            let name = $0.name.lowercased()
-            return name.contains("dxvk-macos") && name.hasSuffix(".tar.gz") && !name.contains("source")
-        }, nextPage: pageResult.nextPage)
+        return EngineReleasePage(assets: pageResult.assets.filter(isMacOSDXVKAsset), nextPage: pageResult.nextPage)
     }
 
     public static func installedDXVKPackages(for runtime: Runtime) -> [DXVKPackage] {
@@ -137,16 +149,13 @@ public enum EngineInstaller {
 
     public static func installDXVKPackage(_ asset: EngineAsset, for runtime: Runtime, allowUnverified: Bool = false,
                                           update: @escaping @Sendable (String, Double?) -> Void) async throws -> URL {
-        guard let managedRoot = runtime.managedRoot,
-              FileManager.default.fileExists(atPath: managedRoot.appendingPathComponent("lib/libMoltenVK.dylib").path) else {
-            throw RumError.message("This runtime does not have the macOS MoltenVK libraries needed by this DXVK package.")
+        guard Self.supportsMacOSDXVK(runtime), let managedRoot = runtime.managedRoot else {
+            throw RumError.message("This runtime needs a managed x64 Wine engine with MoltenVK to use macOS DXVK.")
         }
         guard asset.verifiedDownload || allowUnverified else {
             throw RumError.message("This DXVK release has no publisher checksum. Review the release before installing it.")
         }
-        guard asset.browser_download_url.scheme == "https", asset.browser_download_url.host == "github.com",
-              asset.browser_download_url.path.lowercased().hasPrefix("/gcenx/dxvk-macos/releases/download/"),
-              asset.name.lowercased().contains("dxvk-macos"), asset.name.lowercased().hasSuffix(".tar.gz"),
+        guard asset.browser_download_url.scheme == "https", isMacOSDXVKAsset(asset),
               asset.size > 0, asset.size < 1_000_000_000 else {
             throw RumError.message("The DXVK release asset has an unexpected URL, format, or size.")
         }

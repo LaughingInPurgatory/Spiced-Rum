@@ -123,6 +123,7 @@ struct SetupView: View {
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                 }
+                GroupBox { graphicsVersionSection.padding(8) }
                 Divider()
                 Text("Registered runtimes").font(.title3.weight(.semibold))
                 if store.catalog.runtimes.isEmpty {
@@ -145,9 +146,6 @@ struct SetupView: View {
                         }
                         Spacer()
                         Text(runtime.useRosetta ? "Rosetta · x64" : "Runtime managed").font(.caption).foregroundStyle(.secondary)
-                        if supportsDXVKManagement(runtime) {
-                            Button("DXVK versions…") { dxvkRuntime = runtime }.disabled(store.setupBusy)
-                        }
                         Button("Reveal") { NSWorkspace.shared.selectFile(runtime.executable.path, inFileViewerRootedAtPath: "") }
                         Button("Remove…") { requestRuntimeRemoval(runtime) }
                             .disabled(store.setupBusy || !store.storageAvailable)
@@ -213,9 +211,72 @@ struct SetupView: View {
         runtimePendingRemoval = runtime
     }
 
-    private func supportsDXVKManagement(_ runtime: Runtime) -> Bool {
-        guard let root = runtime.managedRoot else { return false }
-        return FileManager.default.fileExists(atPath: root.appendingPathComponent("lib/libMoltenVK.dylib").path)
+    private var graphicsVersionSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Graphics versions").font(.headline)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("DXVK · macOS / MoltenVK").font(.subheadline.weight(.semibold))
+                Text("Only macOS DXVK releases are shown. Their Windows x64 components run in the Rosetta Wine engines that provide MoltenVK; Linux Vulkan builds are excluded.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                let dxvkRuntimes = store.catalog.runtimes.filter(EngineInstaller.supportsMacOSDXVK)
+                if dxvkRuntimes.isEmpty {
+                    Text("Install a managed x64 macOS Wine engine with MoltenVK to manage DXVK versions.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    ForEach(dxvkRuntimes) { runtime in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(runtime.name).fontWeight(.medium)
+                                Text(runtime.dxvkPackage.map { "Selected: DXVK · \(dxvkVersionName($0))" } ?? "No DXVK version selected")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Manage versions…") { dxvkRuntime = runtime }.disabled(store.setupBusy || !store.storageAvailable)
+                        }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("D3DMetal · Apple GPTK").font(.subheadline.weight(.semibold))
+                Text("Apple distributes D3DMetal inside versioned GPTK evaluation images. Each version is installed as its own verified Wine engine, so a shotglass can switch versions with Change engine.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                let installedVersions = store.catalog.runtimes.compactMap(\.gptkVersion)
+                let versions = Array(Set(store.gptkEvaluationVersions + installedVersions))
+                    .sorted { GPTKInstaller.isNewerVersion($0, than: $1) }
+                if versions.isEmpty {
+                    Text("No alternate GPTK evaluation images are available. Download an Apple evaluation image and keep it in Downloads to add its version here.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    ForEach(versions, id: \.self) { version in
+                        let installed = store.catalog.runtimes.first {
+                            $0.d3dMetal && $0.gptkVersion?.localizedStandardCompare(version) == .orderedSame
+                        }
+                        let matchingHost = store.availableGPTKHosts.contains {
+                            $0.version.localizedStandardCompare(version) == .orderedSame
+                        }
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("GPTK \(version)").fontWeight(.medium)
+                                Text(installed.map { "Installed as \($0.name)" } ?? (matchingHost ? "Matching Apple Wine host found" : "Matching Apple Wine host not installed"))
+                                    .font(.caption).foregroundStyle(installed == nil && !matchingHost ? .orange : .secondary)
+                            }
+                            Spacer()
+                            if installed != nil {
+                                Label("Installed", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+                            } else {
+                                Button("Install version") { store.setUpAppleGPTK(evaluationVersion: version) }
+                                    .disabled(!matchingHost || store.setupBusy || !store.storageAvailable || ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 15)
+                            }
+                        }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                Link("Find GPTK and evaluation versions at Apple ↗", destination: URL(string: "https://developer.apple.com/download/all/?q=game%20porting%20toolkit")!)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func dxvkVersionName(_ package: URL) -> String {

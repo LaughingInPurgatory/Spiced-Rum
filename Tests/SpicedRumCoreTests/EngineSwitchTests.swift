@@ -173,6 +173,11 @@ final class EngineSwitchTests: XCTestCase {
         | heroic Helper Application [downloadable]
         | ===== dlls =====
         | vcrun2022 Visual C++ 2015-2022 [downloadable]
+        | dxvk Vulkan-based D3D10/D3D11 implementation for Linux / Wine (latest)
+        | dxvk1000 Vulkan-based D3D10/D3D11 implementation for Linux / Wine (1.0)
+        | dxvk_async DXVK async for Linux / Wine
+        | vkd3d Vulkan-based D3D12 implementation for Linux / Wine (latest)
+        | linuxapp A Linux-only helper
         | invalid/verb This must be skipped
         | ===== settings =====
         | win10 Set Windows version to Windows 10
@@ -181,22 +186,42 @@ final class EngineSwitchTests: XCTestCase {
         XCTAssertEqual(dependencies.first(where: { $0.id == "vcrun2022" })?.title, "Visual C++ 2015-2022 [downloadable]")
         XCTAssertEqual(dependencies.first(where: { $0.id == "win10" })?.category, "settings")
         XCTAssertFalse(dependencies.contains(where: { $0.id == "invalid/verb" }))
+        XCTAssertFalse(dependencies.contains(where: { ["dxvk", "dxvk1000", "dxvk_async", "vkd3d", "linuxapp"].contains($0.id) }))
         XCTAssertTrue(dependencies.contains(where: { $0.id == "corefonts" }))
     }
 
     func testDXVKReleasePageIncludesOnlyMacOSPackages() {
-        func asset(_ id: Int, _ name: String) -> EngineAsset {
+        func asset(_ id: Int, _ name: String, repository: String = "Gcenx/DXVK-macOS") -> EngineAsset {
             EngineAsset(id: id, name: name, size: 100, digest: nil,
-                        browser_download_url: URL(string: "https://github.com/Gcenx/DXVK-macOS/releases/download/v1/\(name)")!)
+                        browser_download_url: URL(string: "https://github.com/\(repository)/releases/download/v1/\(name)")!)
         }
         let page = EngineInstaller.dxvkReleasePage([
             asset(1, "dxvk-macOS-async-v1.tar.gz"),
             asset(2, "dxvk-macOS-source.tar.gz"),
             asset(3, "dxvk-linux.tar.gz"),
-            asset(4, "notes.txt")
+            asset(4, "notes.txt"),
+            asset(5, "dxvk-macOS-async-v1.tar.gz", repository: "someone-else/DXVK-macOS")
         ], page: 2, link: "<https://api.github.com/releases?page=3>; rel=\"next\"")
         XCTAssertEqual(page.assets.map(\.id), [1])
         XCTAssertEqual(page.nextPage, 3)
+    }
+
+    func testDXVKManagementRequiresRosettaWineWithMoltenVK() throws {
+        let root = try fixture()
+        let runtime = try engine(in: root, name: "macOS DXVK")
+        var managed = runtime
+        managed.useRosetta = true
+        managed.managedRoot = root
+        let wineRoot = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
+        let moltenVK = wineRoot.appendingPathComponent("lib/libMoltenVK.dylib")
+        try FileManager.default.createDirectory(at: moltenVK.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: moltenVK)
+        XCTAssertTrue(EngineInstaller.supportsMacOSDXVK(managed))
+        managed.useRosetta = false
+        XCTAssertFalse(EngineInstaller.supportsMacOSDXVK(managed))
+        managed.useRosetta = true
+        try FileManager.default.removeItem(at: moltenVK)
+        XCTAssertFalse(EngineInstaller.supportsMacOSDXVK(managed))
     }
 
     func testRecoveryBackupCannotBeDeletedUntilRestored() async throws {
