@@ -214,7 +214,8 @@ final class ShotglassTests: XCTestCase {
         XCTAssertTrue(lines.contains("SPICED_RUM_X64_OK"))
         XCTAssertTrue(try String(contentsOf: ready.prefix.appendingPathComponent("system.reg")).contains("#arch=win64"))
         if ProcessInfo.processInfo.environment["SPICED_RUM_TEST_COMPONENTS"] == "1" {
-            try await Dependencies.install(.d3dcompiler_47, in: ready)
+            let dependency = try XCTUnwrap(Dependencies.recommended.first { $0.rawValue == "d3dcompiler_47" })
+            try await Dependencies.install(dependency, in: ready)
             try EngineInstaller.verify(ready.prefix.appendingPathComponent("drive_c/windows/system32/d3dcompiler_47.dll"), digest: "sha256:4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3")
         }
         try await Wine.execute(runtime: engine, arguments: ["wineboot", "--shutdown", "--force", "--kill"], environment: Wine.environment(for: ready), directory: ready.folder, log: ready.log)

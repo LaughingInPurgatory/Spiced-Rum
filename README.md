@@ -53,7 +53,7 @@ Shotglass cards show a status light near the top. Green means setup has complete
 
 To remove a shotglass, select the trash icon on its card or beside its name in the collection sidebar, then confirm. Spiced-Rum stops its Windows processes and moves the whole folder—including its Windows environment, installed apps, games, settings, and backups—to macOS Trash. The shared Wine engine stays installed.
 
-If a program reports a missing Windows component, open its shotglass and choose **Install components**. Available options include:
+If a program reports a missing Windows component, open its shotglass and choose **Install components**. The list refreshes from the installed Winetricks version and can include applications, benchmarks, DLLs, fonts, and Windows settings. Search by name or verb. Common entries include:
 
 - Visual C++ 2015–2022
 - D3DCompiler 47
@@ -61,7 +61,7 @@ If a program reports a missing Windows component, open its shotglass and choose 
 - Core fonts
 - .NET Framework 4.8
 
-Spiced-Rum sets up Winetricks and its extraction tools through Homebrew when needed. Windows installers may still ask for setup or license approval. Components are installed only in the selected shotglass.
+Spiced-Rum sets up Winetricks and its extraction tools through Homebrew when needed. Windows installers may still ask for setup or license approval. Components are installed only in the selected shotglass. Some entries run installers or change Windows settings; choose the verb the program asks for.
 
 Heroic's Windows installer has a special path. Spiced-Rum extracts the app files into C:\Program Files\Heroic and adds a shortcut without running the installer's unreliable “Heroic is running” check.
 
@@ -145,7 +145,8 @@ Valve Proton and GE-Proton are built for Linux. Rosetta does not make their Linu
 - **DXVK through MoltenVK:** DXVK translates Direct3D 10/11 to Vulkan, and MoltenVK translates Vulkan to Metal.
   - Managed WineHQ engines receive a macOS-compatible DXVK package automatically.
   - Imported engines need their own macOS-compatible DXVK package and MoltenVK. Linux DXVK packages do not work here.
-  - Spiced-Rum installs DXVK after Wine finishes setting up the shotglass, keeps Wine's original DLLs, and applies the selected settings when launching programs. The package can include optional x32 DLLs. See [Gcenx DXVK-macOS](https://github.com/Gcenx/DXVK-macOS).
+  - In **Runtimes & setup**, choose **DXVK versions** to install an older or newer package from [Gcenx DXVK-macOS](https://github.com/Gcenx/DXVK-macOS/releases). Spiced-Rum keeps versions side by side and updates shotglasses using DXVK with that engine. It keeps Wine's original DLLs so you can switch graphics later. The package can include optional x32 DLLs.
+  - Shotglass graphics can be changed after setup. D3DMetal appears only when the selected engine already includes Apple's matching GPTK payload. Its version changes with the engine.
 - **D3DMetal:** Apple's Direct3D-to-Metal implementation. It is available only in engines that already include it. GPTK-capable Whisky releases receive matching files from Apple's evaluation image; general Wine builds do not.
 - **DXMT:** A separate Direct3D 10/11-to-Metal implementation. This preview supports runtimes that already include DXMT's built-in Wine DLLs.
   Native-DLL DXMT packages need a prepared launcher and should use Runtime default. See [DXMT](https://github.com/3Shain/dxmt) and its [installation guide](https://github.com/3Shain/dxmt/wiki/DXMT-Installation-Guide-for-Geeks).

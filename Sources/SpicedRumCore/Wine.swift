@@ -138,7 +138,7 @@ public enum Wine {
         }
     }
 
-    static func removeDXVK(from prefix: URL) throws {
+    public static func removeDXVK(from prefix: URL) throws {
         let fm = FileManager.default
         for target in ["system32", "syswow64"] {
             for dll in ["d3d11.dll", "d3d10core.dll"] {
@@ -162,7 +162,7 @@ public enum Wine {
         }
     }
 
-    static func installDXVK(from source: URL, into prefix: URL) throws {
+    public static func installDXVK(from source: URL, into prefix: URL) throws {
         let fm = FileManager.default
         for (arch, target) in [("x64", "system32"), ("x32", "syswow64")] {
             let folder = source.appendingPathComponent(arch)

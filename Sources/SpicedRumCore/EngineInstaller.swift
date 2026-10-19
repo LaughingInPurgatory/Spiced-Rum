@@ -48,6 +48,19 @@ public struct EngineReleasePage {
     public let nextPage: Int?
 }
 
+public struct DXVKPackage: Identifiable, Hashable {
+    public let title: String
+    public let folder: URL
+    public let releaseTag: String?
+    public var id: String { folder.path }
+}
+
+private struct DXVKPackageReceipt: Codable {
+    let asset: EngineAsset
+    let sha256: String
+    let publisherChecksumVerified: Bool
+}
+
 public enum EngineFeed: String, CaseIterable, Identifiable {
     case wineHQ = "Wine Staging / Stable / Devel"
     case sikarugir = "Sikarugir engines"
@@ -72,6 +85,122 @@ public enum EngineInstaller {
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RumError.message("Cannot load engine releases. GitHub may be unavailable or rate limiting requests. Try again later.") }
         let releases = try JSONDecoder().decode([EngineRelease].self, from: data)
         return releasePage(releaseAssets(from: releases, feed: feed), feed: feed, page: page, link: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Link"))
+    }
+
+    public static func dxvkReleases(page: Int = 1) async throws -> EngineReleasePage {
+        guard page > 0 else { throw RumError.message("Invalid DXVK release history page.") }
+        let url = URL(string: "https://api.github.com/repos/Gcenx/DXVK-macOS/releases?per_page=12&page=\(page)")!
+        var request = URLRequest(url: url)
+        request.setValue("Spiced-Rum/0.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw RumError.message("Cannot load macOS DXVK releases. GitHub may be unavailable or rate limiting requests. Try again later.")
+        }
+        let releases = try JSONDecoder().decode([EngineRelease].self, from: data)
+        let assets = releases.flatMap { release in
+            release.assets.map { original -> EngineAsset in
+                var asset = original
+                asset.releaseTag = release.tag_name
+                asset.releaseName = release.name
+                asset.releaseNotes = release.body
+                return asset
+            }
+        }
+        return dxvkReleasePage(assets, page: page, link: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Link"))
+    }
+
+    static func dxvkReleasePage(_ assets: [EngineAsset], page: Int, link: String?) -> EngineReleasePage {
+        let pageResult = releasePage(assets, page: page, link: link)
+        return EngineReleasePage(assets: pageResult.assets.filter {
+            let name = $0.name.lowercased()
+            return name.contains("dxvk-macos") && name.hasSuffix(".tar.gz") && !name.contains("source")
+        }, nextPage: pageResult.nextPage)
+    }
+
+    public static func installedDXVKPackages(for runtime: Runtime) -> [DXVKPackage] {
+        guard let managedRoot = runtime.managedRoot else { return [] }
+        let graphics = managedRoot.appendingPathComponent("graphics", isDirectory: true)
+        guard let folders = try? FileManager.default.contentsOfDirectory(at: graphics, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return [] }
+        return folders.compactMap { folder in
+            guard let values = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true else { return nil }
+            let nested = folder.appendingPathComponent("package", isDirectory: true)
+            let package = FileManager.default.fileExists(atPath: nested.appendingPathComponent("x64/d3d11.dll").path) ? nested : folder
+            guard (try? Wine.validateDXVK(package)) != nil else { return nil }
+            let title = folder.lastPathComponent.hasPrefix("DXVK-") ? String(folder.lastPathComponent.dropFirst(5)) : folder.lastPathComponent
+            let receiptURL = folder.appendingPathComponent("download-receipt.json")
+            let receipt = (try? Data(contentsOf: receiptURL)).flatMap { try? JSONDecoder().decode(DXVKPackageReceipt.self, from: $0) }
+            return DXVKPackage(title: title, folder: package, releaseTag: receipt?.asset.releaseTag)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
+    }
+
+    public static func installDXVKPackage(_ asset: EngineAsset, for runtime: Runtime, allowUnverified: Bool = false,
+                                          update: @escaping @Sendable (String, Double?) -> Void) async throws -> URL {
+        guard let managedRoot = runtime.managedRoot,
+              FileManager.default.fileExists(atPath: managedRoot.appendingPathComponent("lib/libMoltenVK.dylib").path) else {
+            throw RumError.message("This runtime does not have the macOS MoltenVK libraries needed by this DXVK package.")
+        }
+        guard asset.verifiedDownload || allowUnverified else {
+            throw RumError.message("This DXVK release has no publisher checksum. Review the release before installing it.")
+        }
+        guard asset.browser_download_url.scheme == "https", asset.browser_download_url.host == "github.com",
+              asset.browser_download_url.path.lowercased().hasPrefix("/gcenx/dxvk-macos/releases/download/"),
+              asset.name.lowercased().contains("dxvk-macos"), asset.name.lowercased().hasSuffix(".tar.gz"),
+              asset.size > 0, asset.size < 1_000_000_000 else {
+            throw RumError.message("The DXVK release asset has an unexpected URL, format, or size.")
+        }
+        if let releaseTag = asset.releaseTag,
+           let existing = installedDXVKPackages(for: runtime).first(where: { $0.releaseTag == releaseTag }) {
+            return existing.folder
+        }
+
+        let graphics = managedRoot.appendingPathComponent("graphics", isDirectory: true)
+        try FileManager.default.createDirectory(at: graphics, withIntermediateDirectories: true)
+        let staging = graphics.appendingPathComponent(".install-dxvk-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        update("Downloading DXVK (\(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file)))…", nil)
+        var request = URLRequest(url: asset.browser_download_url)
+        request.timeoutInterval = 1800
+        let (download, response) = try await URLSession.shared.download(for: request)
+        defer { try? FileManager.default.removeItem(at: download) }
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RumError.message("DXVK download failed. Please retry.") }
+        let archive = staging.appendingPathComponent("dxvk.tar.gz")
+        try FileManager.default.copyItem(at: download, to: archive)
+        let actualSize = (try FileManager.default.attributesOfItem(atPath: archive.path)[.size] as? NSNumber)?.int64Value
+        guard actualSize == asset.size else { throw RumError.message("The DXVK download is incomplete. Please retry.") }
+        update(asset.verifiedDownload ? "Verifying DXVK SHA-256…" : "Recording DXVK download checksum…", nil)
+        if asset.verifiedDownload, let digest = asset.digest { try verify(archive, digest: digest) }
+        let archiveDigest = try checksum(archive)
+        let content = staging.appendingPathComponent("content", isDirectory: true)
+        update("Unpacking DXVK…", nil)
+        try await unpack(archive, into: content)
+        let candidates = (try FileManager.default.contentsOfDirectory(at: content, includingPropertiesForKeys: nil))
+        let package = ([content] + candidates).first {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent("x64/d3d11.dll").path)
+        }
+        guard let package else { throw RumError.message("This DXVK archive has an unexpected layout. No engine files were changed.") }
+        try Wine.validateDXVK(package)
+        let tag = String(asset.releaseTag ?? asset.name).map { character -> Character in
+            character.isLetter || character.isNumber || "._-".contains(character) ? character : "-"
+        }
+        let destination = graphics.appendingPathComponent("DXVK-" + String(tag) + "-" + asset.name.replacingOccurrences(of: ".tar.gz", with: ""), isDirectory: true)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw RumError.message("A DXVK folder with this release name already exists but could not be recognized. Remove it manually after checking its contents, then retry.")
+        }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        do {
+            let installedPackage = destination.appendingPathComponent("package", isDirectory: true)
+            try FileManager.default.moveItem(at: package, to: installedPackage)
+            let receipt = try JSONEncoder().encode(DXVKPackageReceipt(asset: asset, sha256: archiveDigest, publisherChecksumVerified: asset.verifiedDownload))
+            try receipt.write(to: destination.appendingPathComponent("download-receipt.json"), options: .atomic)
+            update("DXVK installed", 1)
+            return installedPackage
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
     }
 
     static func releaseAssets(from releases: [EngineRelease], feed: EngineFeed) -> [EngineAsset] {

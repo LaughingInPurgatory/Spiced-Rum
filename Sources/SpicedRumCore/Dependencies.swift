@@ -1,21 +1,26 @@
 import Foundation
 
-public enum WindowsDependency: String, CaseIterable, Identifiable {
-    case vcrun2022, vcrun2019, d3dcompiler_47, d3dx9, corefonts, dotnet48
+public struct WindowsDependency: Identifiable, Hashable {
+    public let rawValue: String
+    public let title: String
+    public let category: String
     public var id: String { rawValue }
-    public var title: String {
-        switch self {
-        case .vcrun2022: return "Visual C++ 2015–2022"
-        case .vcrun2019: return "Visual C++ 2015–2019"
-        case .d3dcompiler_47: return "DirectX shader compiler 47"
-        case .d3dx9: return "DirectX 9 helper libraries"
-        case .corefonts: return "Microsoft core fonts"
-        case .dotnet48: return ".NET Framework 4.8"
-        }
+
+    public init(rawValue: String, title: String, category: String) {
+        self.rawValue = rawValue
+        self.title = title
+        self.category = category
     }
 }
 
 public enum Dependencies {
+    public static let recommended = [
+        WindowsDependency(rawValue: "vcrun2022", title: "Visual C++ 2015–2022", category: "dlls"),
+        WindowsDependency(rawValue: "d3dcompiler_47", title: "DirectX shader compiler 47", category: "dlls"),
+        WindowsDependency(rawValue: "d3dx9", title: "DirectX 9 helper libraries", category: "dlls"),
+        WindowsDependency(rawValue: "corefonts", title: "Microsoft core fonts", category: "fonts"),
+        WindowsDependency(rawValue: "dotnet48", title: ".NET Framework 4.8", category: "dlls")
+    ]
     public static var brew: URL? {
         ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].map { URL(fileURLWithPath: $0) }.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
@@ -30,6 +35,46 @@ public enum Dependencies {
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["HOMEBREW_NO_AUTO_UPDATE"] = "1"; env["HOMEBREW_NO_ANALYTICS"] = "1"
         return env
+    }
+    public static func listAll() async throws -> [WindowsDependency] {
+        guard let script = winetricks else { throw RumError.message("Install Winetricks in Runtimes & setup to browse its components.") }
+        var environment = hostEnvironment
+        for key in ["WINEPREFIX", "WINE", "WINE64", "WINESERVER"] { environment.removeValue(forKey: key) }
+        environment["WINETRICKS_GUI"] = "none"
+        let output = try await ProcessRunner.capture(URL(fileURLWithPath: "/bin/bash"), [script.path, "list-all"], environment: environment)
+        let results = parseListAll(output)
+        guard !results.isEmpty else { throw RumError.message("Winetricks returned no components. Check the dependency tools setup and try again.") }
+        return results
+    }
+
+    public static func parseListAll(_ output: String) -> [WindowsDependency] {
+        let verbPattern = try! NSRegularExpression(pattern: "^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+        var category = "components"
+        var seen = Set<String>()
+        var results: [WindowsDependency] = []
+        for sourceLine in output.components(separatedBy: .newlines) {
+            let line = sourceLine.replacingOccurrences(of: "|", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("===="), line.hasSuffix("====") {
+                category = line.trimmingCharacters(in: CharacterSet(charactersIn: "= ")).lowercased()
+                continue
+            }
+            let fields = line.split(maxSplits: 1, whereSeparator: { $0.isWhitespace })
+            guard let verb = fields.first else { continue }
+            let rawValue = String(verb)
+            let range = NSRange(rawValue.startIndex..<rawValue.endIndex, in: rawValue)
+            guard verbPattern.firstMatch(in: rawValue, range: range) != nil,
+                  seen.insert(rawValue.lowercased()).inserted else { continue }
+            let title = fields.count > 1 ? String(fields[1]).trimmingCharacters(in: .whitespacesAndNewlines) : rawValue
+            results.append(WindowsDependency(rawValue: rawValue, title: title, category: category))
+        }
+        for dependency in recommended where !seen.contains(dependency.rawValue) {
+            results.append(dependency)
+        }
+        return results.sorted {
+            let categoryOrder = $0.category.localizedStandardCompare($1.category)
+            return categoryOrder == .orderedSame ? $0.title.localizedStandardCompare($1.title) == .orderedAscending : categoryOrder == .orderedAscending
+        }
     }
     public static func installTools(log: URL) async throws {
         guard let brew else { throw RumError.message("Install Homebrew from brew.sh first, then use Install dependency tools again. Spiced-Rum uses Homebrew to install Winetricks and its extraction tools.") }
@@ -46,6 +91,9 @@ public enum Dependencies {
     public static func install(_ dependency: WindowsDependency, in entry: ShotglassEntry) async throws {
         guard entry.shotglass.initialized else { throw RumError.message("Initialize the shotglass first.") }
         guard let script = winetricks else { throw RumError.message("Install dependency tools in Runtimes & setup first.") }
+        guard dependency.rawValue.range(of: "^[A-Za-z0-9_][A-Za-z0-9_-]*$", options: .regularExpression) != nil else {
+            throw RumError.message("This Winetricks component name is invalid.")
+        }
         try Wine.checkExecutable(entry.shotglass.runtime.executable)
         let server = entry.shotglass.runtime.executable.deletingLastPathComponent().appendingPathComponent("wineserver")
         guard FileManager.default.isExecutableFile(atPath: server.path) else { throw RumError.message("Winetricks needs wineserver beside the Wine executable. Select the runtime's bin/wine launcher instead of a wrapper script.") }

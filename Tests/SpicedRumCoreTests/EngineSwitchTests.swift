@@ -35,7 +35,7 @@ final class EngineSwitchTests: XCTestCase {
     func shotglass(in root: URL, runtime: Runtime) throws -> ShotglassEntry {
         var model = Shotglass(name: "Games", runtime: runtime, graphics: .wine); model.initialized = true
         let entry = try ShotglassFiles.create(model, parent: root)
-        for path in ["drive_c/windows/system32", "drive_c/Program Files/Game", "drive_c/users/player/Saved Games", "drive_c/ProgramData/Game", "dosdevices"] {
+        for path in ["drive_c/windows/system32", "drive_c/windows/syswow64", "drive_c/Program Files/Game", "drive_c/users/player/Saved Games", "drive_c/ProgramData/Game", "dosdevices"] {
             try FileManager.default.createDirectory(at: entry.prefix.appendingPathComponent(path), withIntermediateDirectories: true)
         }
         try "#arch=win64\noriginal registry".write(to: entry.prefix.appendingPathComponent("system.reg"), atomically: true, encoding: .utf8)
@@ -121,6 +121,82 @@ final class EngineSwitchTests: XCTestCase {
         let backup = try XCTUnwrap(ShotglassEngines.backups(for: switched).first)
         _ = try await ShotglassEngines.restore(backup, to: switched)
         XCTAssertEqual(try String(contentsOf: originalDLL), "old-DXVK")
+    }
+
+    func testShotglassCanSwitchBetweenDXVKAndD3DMetal() async throws {
+        let root = try fixture()
+        var runtime = try engine(in: root, name: "graphics")
+        runtime.d3dMetal = true
+        let package = root.appendingPathComponent("DXVK", isDirectory: true)
+        try FileManager.default.createDirectory(at: package.appendingPathComponent("x64"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: package.appendingPathComponent("x32"), withIntermediateDirectories: true)
+        for arch in ["x64", "x32"] {
+            for dll in ["d3d11.dll", "d3d10core.dll"] {
+                try Data("DXVK".utf8).write(to: package.appendingPathComponent("\(arch)/\(dll)"))
+            }
+        }
+        runtime.dxvkPackage = package
+        var entry = try shotglass(in: root, runtime: runtime)
+        let originalDLL = entry.prefix.appendingPathComponent("drive_c/windows/system32/d3d11.dll")
+        try Data("Wine builtin".utf8).write(to: originalDLL)
+        try Wine.installDXVK(from: package, into: entry.prefix)
+        entry.shotglass.graphics = .dxvk
+        try entry.shotglass.save(in: entry.folder)
+
+        let metal = try await ShotglassGraphics.change(entry, to: .metal)
+        XCTAssertEqual(metal.shotglass.graphics, .metal)
+        XCTAssertEqual(try Data(contentsOf: originalDLL), Data("Wine builtin".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: originalDLL.appendingPathExtension("spicedrum-original").path))
+
+        let dxvk = try await ShotglassGraphics.change(metal, to: .dxvk)
+        XCTAssertEqual(dxvk.shotglass.graphics, .dxvk)
+        XCTAssertEqual(try Data(contentsOf: originalDLL), Data("DXVK".utf8))
+        XCTAssertEqual(try Data(contentsOf: originalDLL.appendingPathExtension("spicedrum-original")), Data("Wine builtin".utf8))
+    }
+
+    func testD3DMetalCannotBeSelectedWhenEngineDoesNotSupportIt() async throws {
+        let root = try fixture()
+        let runtime = try engine(in: root, name: "wine-only")
+        let entry = try ShotglassFiles.create(Shotglass(name: "Wine only", runtime: runtime, graphics: .wine), parent: root)
+        do {
+            _ = try await ShotglassGraphics.change(entry, to: .metal)
+            XCTFail("Expected unsupported D3DMetal selection to fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("does not provide"))
+        }
+        XCTAssertEqual(try Shotglass.load(from: entry.folder).graphics, .wine)
+    }
+
+    func testWinetricksListParsesCategoriesAndFiltersNonVerbLines() {
+        let dependencies = Dependencies.parseListAll("""
+        | ===== apps =====
+        | heroic Helper Application [downloadable]
+        | ===== dlls =====
+        | vcrun2022 Visual C++ 2015-2022 [downloadable]
+        | invalid/verb This must be skipped
+        | ===== settings =====
+        | win10 Set Windows version to Windows 10
+        """)
+        XCTAssertEqual(dependencies.first(where: { $0.id == "heroic" })?.category, "apps")
+        XCTAssertEqual(dependencies.first(where: { $0.id == "vcrun2022" })?.title, "Visual C++ 2015-2022 [downloadable]")
+        XCTAssertEqual(dependencies.first(where: { $0.id == "win10" })?.category, "settings")
+        XCTAssertFalse(dependencies.contains(where: { $0.id == "invalid/verb" }))
+        XCTAssertTrue(dependencies.contains(where: { $0.id == "corefonts" }))
+    }
+
+    func testDXVKReleasePageIncludesOnlyMacOSPackages() {
+        func asset(_ id: Int, _ name: String) -> EngineAsset {
+            EngineAsset(id: id, name: name, size: 100, digest: nil,
+                        browser_download_url: URL(string: "https://github.com/Gcenx/DXVK-macOS/releases/download/v1/\(name)")!)
+        }
+        let page = EngineInstaller.dxvkReleasePage([
+            asset(1, "dxvk-macOS-async-v1.tar.gz"),
+            asset(2, "dxvk-macOS-source.tar.gz"),
+            asset(3, "dxvk-linux.tar.gz"),
+            asset(4, "notes.txt")
+        ], page: 2, link: "<https://api.github.com/releases?page=3>; rel=\"next\"")
+        XCTAssertEqual(page.assets.map(\.id), [1])
+        XCTAssertEqual(page.nextPage, 3)
     }
 
     func testRecoveryBackupCannotBeDeletedUntilRestored() async throws {

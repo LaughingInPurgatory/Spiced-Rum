@@ -11,6 +11,7 @@ struct SetupView: View {
     @State private var showRosetta = false
     @State private var runtimePendingRemoval: Runtime?
     @State private var runtimeRemovalDescription = ""
+    @State private var dxvkRuntime: Runtime?
 
     var body: some View {
         ScrollView {
@@ -137,10 +138,16 @@ struct SetupView: View {
                             if let version = runtime.gptkVersion {
                                 Text("D3DMetal payload · GPTK \(version)").font(.caption2).foregroundStyle(.green)
                             }
+                            if let package = runtime.dxvkPackage {
+                                Text("DXVK · \(dxvkVersionName(package))").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
                             Text(runtime.executable.path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
                         }
                         Spacer()
                         Text(runtime.useRosetta ? "Rosetta · x64" : "Runtime managed").font(.caption).foregroundStyle(.secondary)
+                        if supportsDXVKManagement(runtime) {
+                            Button("DXVK versions…") { dxvkRuntime = runtime }.disabled(store.setupBusy)
+                        }
                         Button("Reveal") { NSWorkspace.shared.selectFile(runtime.executable.path, inFileViewerRootedAtPath: "") }
                         Button("Remove…") { requestRuntimeRemoval(runtime) }
                             .disabled(store.setupBusy || !store.storageAvailable)
@@ -170,6 +177,7 @@ struct SetupView: View {
         }
         .sheet(isPresented: $showRuntime) { AddRuntimeView(source: chosenSource) }
         .sheet(isPresented: $showDownload) { EngineDownloadView() }
+        .sheet(item: $dxvkRuntime) { DXVKVersionView(runtime: $0) }
         .sheet(isPresented: $showRosetta) { RosettaSetupView() }
         .confirmationDialog("Remove this engine?", isPresented: Binding(
             get: { runtimePendingRemoval != nil },
@@ -203,6 +211,16 @@ struct SetupView: View {
         }
         runtimeRemovalDescription = store.runtimeRemovalPrompt(for: runtime)
         runtimePendingRemoval = runtime
+    }
+
+    private func supportsDXVKManagement(_ runtime: Runtime) -> Bool {
+        guard let root = runtime.managedRoot else { return false }
+        return FileManager.default.fileExists(atPath: root.appendingPathComponent("lib/libMoltenVK.dylib").path)
+    }
+
+    private func dxvkVersionName(_ package: URL) -> String {
+        let folder = package.lastPathComponent == "package" ? package.deletingLastPathComponent() : package
+        return folder.lastPathComponent.hasPrefix("DXVK-") ? String(folder.lastPathComponent.dropFirst(5)) : folder.lastPathComponent
     }
 }
 

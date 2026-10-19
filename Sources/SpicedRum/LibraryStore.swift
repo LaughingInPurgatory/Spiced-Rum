@@ -217,6 +217,110 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    func installDXVK(_ asset: EngineAsset, for runtime: Runtime, allowUnverified: Bool = false) {
+        manageDXVK(for: runtime) {
+            try await EngineInstaller.installDXVKPackage(asset, for: runtime, allowUnverified: allowUnverified) { message, progress in
+                Task { @MainActor in self.setupMessage = message; self.setupProgress = progress }
+            }
+        }
+    }
+
+    func selectDXVK(_ package: DXVKPackage, for runtime: Runtime) {
+        manageDXVK(for: runtime) { package.folder }
+    }
+
+    private func manageDXVK(for runtime: Runtime, package: @escaping () async throws -> URL) {
+        guard !setupBusy else { return }
+        setupBusy = true; setupMessage = "Preparing DXVK…"; setupProgress = nil
+        Task {
+            defer { setupBusy = false }
+            do {
+                let packageURL = try await package()
+                try await applyDXVK(packageURL, to: runtime)
+                setupMessage = "DXVK \(packageURL.deletingLastPathComponent().lastPathComponent) is active for \(runtime.name) and its shotglasses."
+            } catch { setupMessage = "DXVK setup needs attention"; self.error = error.localizedDescription }
+        }
+    }
+
+    private func applyDXVK(_ package: URL, to runtime: Runtime) async throws {
+        try Wine.validateDXVK(package)
+        guard let runtimeIndex = catalog.runtimes.firstIndex(where: { $0.id == runtime.id }) else {
+            throw RumError.message("This runtime is no longer registered. Refresh the runtime list and try again.")
+        }
+        let oldRuntime = catalog.runtimes[runtimeIndex]
+        guard oldRuntime.managedRoot == runtime.managedRoot else {
+            throw RumError.message("This runtime changed while DXVK was being prepared. Refresh Runtimes & setup and retry.")
+        }
+
+        var affected: [ShotglassEntry] = []
+        for folder in catalog.shotglassFolders {
+            let shotglass = try Shotglass.load(from: folder)
+            if shotglass.runtime.id == runtime.id { affected.append(ShotglassEntry(shotglass: shotglass, folder: folder)) }
+        }
+        guard !affected.contains(where: \.engineChangePending) else {
+            throw RumError.message("A shotglass has an unfinished engine change. Restore its backup before changing DXVK versions.")
+        }
+        guard !affected.contains(where: { busy.contains($0.id) }) else {
+            throw RumError.message("Wait for the current shotglass operation to finish before changing DXVK versions.")
+        }
+        let replacesActiveDXVK = affected.contains { $0.shotglass.initialized && $0.shotglass.graphics == .dxvk }
+        let oldDXVKPackage = oldRuntime.dxvkPackage
+        if replacesActiveDXVK { try Wine.validateDXVK(oldDXVKPackage) }
+
+        var updatedRuntime = oldRuntime
+        updatedRuntime.dxvkPackage = package
+        busy.formUnion(affected.map(\.id))
+        defer { busy.subtract(affected.map(\.id)) }
+        var changed: [(original: ShotglassEntry, updated: ShotglassEntry, replacedPrefixDLLs: Bool)] = []
+        do {
+            for original in affected {
+                var updated = original
+                updated.shotglass.runtime = updatedRuntime
+                var replacedPrefixDLLs = false
+                if original.shotglass.initialized && original.shotglass.graphics == .dxvk {
+                    try await Wine.stopServer(original)
+                    do {
+                        try Wine.removeDXVK(from: original.prefix)
+                        try Wine.installDXVK(from: package, into: original.prefix)
+                        replacedPrefixDLLs = true
+                    } catch {
+                        let failure = error
+                        do {
+                            guard let oldDXVKPackage else { throw RumError.message("The previous DXVK package is unavailable.") }
+                            try Wine.installDXVK(from: oldDXVKPackage, into: original.prefix)
+                        }
+                        catch {
+                            throw RumError.message("DXVK could not be replaced and the previous DLLs could not be restored. The package is preserved at \(package.path).\n\(failure.localizedDescription)\nRecovery: \(error.localizedDescription)")
+                        }
+                        throw failure
+                    }
+                }
+                changed.append((original, updated, replacedPrefixDLLs))
+                try updated.shotglass.save(in: updated.folder)
+                replaceEntry(updated)
+            }
+            var updatedCatalog = catalog
+            updatedCatalog.runtimes[runtimeIndex] = updatedRuntime
+            try persist(updatedCatalog)
+        } catch {
+            let failure = error
+            do {
+                for change in changed.reversed() {
+                    if change.replacedPrefixDLLs {
+                        try await Wine.stopServer(change.updated)
+                        guard let oldDXVKPackage else { throw RumError.message("The previous DXVK package is unavailable.") }
+                        try Wine.installDXVK(from: oldDXVKPackage, into: change.original.prefix)
+                    }
+                    try change.original.shotglass.save(in: change.original.folder)
+                    replaceEntry(change.original)
+                }
+            } catch {
+                throw RumError.message("DXVK changed part of this runtime's shotglasses and automatic rollback could not finish. Existing packages and shotglasses were preserved.\n\(failure.localizedDescription)\nRecovery: \(error.localizedDescription)")
+            }
+            throw failure
+        }
+    }
+
     func installDependencyTools() {
         guard !setupBusy else { return }
         setupBusy = true; setupMessage = "Installing Winetricks and extraction tools with Homebrew…"; setupProgress = nil
@@ -503,6 +607,13 @@ final class LibraryStore: ObservableObject {
             let updated = try await ShotglassEngines.change(entry, to: runtime) { message in
                 Task { @MainActor in self.messages[entry.id] = message }
             }
+            await MainActor.run { self.replaceEntry(updated) }
+        }
+    }
+
+    func changeGraphics(_ entry: ShotglassEntry, to graphics: Graphics) {
+        perform(entry, message: "Switching graphics and stopping this shotglass's Windows processes…", successMessage: "Graphics changed to \(graphics.rawValue).") {
+            let updated = try await ShotglassGraphics.change(entry, to: graphics)
             await MainActor.run { self.replaceEntry(updated) }
         }
     }

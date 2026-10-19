@@ -258,6 +258,18 @@ struct ShotglassDetail: View {
                         if let file = chooseFile(prompt: "Run in Shotglass", extensions: ["exe", "msi"]) { store.run(entry, executable: file) }
                     }.buttonStyle(PrimaryButtonStyle())
                     Button("Wine configuration") { store.configure(entry) }
+                    Menu {
+                        ForEach(ShotglassGraphics.choices(for: entry.shotglass.runtime)) { graphics in
+                            Button {
+                                store.changeGraphics(entry, to: graphics)
+                            } label: {
+                                if graphics == entry.shotglass.graphics { Label(graphics.rawValue, systemImage: "checkmark") }
+                                else { Text(graphics.rawValue) }
+                            }
+                        }
+                    } label: {
+                        Label("Graphics: \(entry.shotglass.graphics.rawValue)", systemImage: "display")
+                    }.help("Change graphics for this shotglass. Windows processes stop before the switch.")
                     Button("Install components…") { showDependencies = true }
                     Spacer()
                     Button("Add application…", systemImage: "plus") {
