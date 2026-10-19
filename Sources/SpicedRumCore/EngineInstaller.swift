@@ -15,11 +15,17 @@ public struct EngineAsset: Decodable, Identifiable, Hashable {
     public var requiresSikarugirLauncher: Bool { name.contains("WineSikarugir11.") }
 
     public func displayName(in feed: EngineFeed) -> String {
-        guard feed == .whisky else { return name }
-        return releaseName ?? releaseTag ?? name
+        switch feed {
+        case .whisky: return releaseName ?? releaseTag ?? name
+        case .barrelWine: return releaseTag?.replacingOccurrences(of: "wine-cx-", with: "CrossOver ") ?? name
+        default: return name
+        }
     }
 
     public func installedName(in feed: EngineFeed) -> String {
+        if feed == .barrelWine {
+            return "Barrel Wine · " + (releaseTag?.replacingOccurrences(of: "wine-cx-", with: "CrossOver ") ?? name)
+        }
         guard feed == .whisky else {
             return name.replacingOccurrences(of: ".tar.xz", with: "").replacingOccurrences(of: ".tar.gz", with: "")
         }
@@ -55,7 +61,20 @@ public struct DXVKPackage: Identifiable, Hashable {
     public var id: String { folder.path }
 }
 
+public struct DXMTPackage: Identifiable, Hashable {
+    public let title: String
+    public let folder: URL
+    public let releaseTag: String?
+    public var id: String { folder.path }
+}
+
 private struct DXVKPackageReceipt: Codable {
+    let asset: EngineAsset
+    let sha256: String
+    let publisherChecksumVerified: Bool
+}
+
+private struct DXMTPackageReceipt: Codable {
     let asset: EngineAsset
     let sha256: String
     let publisherChecksumVerified: Bool
@@ -65,12 +84,14 @@ public enum EngineFeed: String, CaseIterable, Identifiable {
     case wineHQ = "Wine Staging / Stable / Devel"
     case sikarugir = "Sikarugir engines"
     case whisky = "Whisky community Wine Libraries"
+    case barrelWine = "Barrel Wine · CrossOver"
     public var id: String { rawValue }
     public var repository: String {
         switch self {
         case .wineHQ: return "Gcenx/macOS_Wine_builds"
         case .sikarugir: return "Sikarugir-App/Engines"
         case .whisky: return "frankea/Whisky"
+        case .barrelWine: return "MrTuNNe/Barrel"
         }
     }
 }
@@ -85,6 +106,43 @@ public enum EngineInstaller {
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RumError.message("Cannot load engine releases. GitHub may be unavailable or rate limiting requests. Try again later.") }
         let releases = try JSONDecoder().decode([EngineRelease].self, from: data)
         return releasePage(releaseAssets(from: releases, feed: feed), feed: feed, page: page, link: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Link"))
+    }
+
+    public static func dxmtReleases(page: Int = 1) async throws -> EngineReleasePage {
+        guard page > 0 else { throw RumError.message("Invalid DXMT release history page.") }
+        let url = URL(string: "https://api.github.com/repos/3Shain/dxmt/releases?per_page=12&page=\(page)")!
+        var request = URLRequest(url: url)
+        request.setValue("Spiced-Rum/0.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw RumError.message("Cannot load official DXMT releases. GitHub may be unavailable or rate limiting requests. Try again later.")
+        }
+        let releases = try JSONDecoder().decode([EngineRelease].self, from: data)
+        let assets = releaseAssets(from: releases, feed: .barrelWine)
+        return dxmtReleasePage(assets, page: page, link: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Link"))
+    }
+
+    static func dxmtReleasePage(_ assets: [EngineAsset], page: Int, link: String?) -> EngineReleasePage {
+        let pageResult = releasePage(assets, page: page, link: link)
+        return EngineReleasePage(assets: pageResult.assets.filter(isDXMTAsset), nextPage: pageResult.nextPage)
+    }
+
+    static func isDXMTAsset(_ asset: EngineAsset) -> Bool {
+        let name = asset.name.lowercased()
+        return asset.browser_download_url.host?.lowercased() == "github.com"
+            && asset.browser_download_url.path.lowercased().hasPrefix("/3shain/dxmt/releases/download/")
+            && name.range(of: #"^dxmt-v[0-9]+(?:\.[0-9]+)*-builtin\.tar\.gz$"#, options: .regularExpression) != nil
+    }
+
+    static func isBarrelWineAsset(_ asset: EngineAsset) -> Bool {
+        guard let releaseTag = asset.releaseTag?.lowercased() else { return false }
+        let name = asset.name.lowercased()
+        return releaseTag.hasPrefix("wine-cx-")
+            && releaseTag.range(of: #"^wine-cx-[0-9]+(?:\.[0-9]+)+$"#, options: .regularExpression) != nil
+            && asset.browser_download_url.host?.lowercased() == "github.com"
+            && asset.browser_download_url.path.lowercased().hasPrefix("/mrtunne/barrel/releases/download/")
+            && name.range(of: #"^barrel-wine-[0-9]+(?:\.[0-9]+)+\.tar\.xz$"#, options: .regularExpression) != nil
     }
 
     public static func dxvkReleases(page: Int = 1) async throws -> EngineReleasePage {
@@ -144,6 +202,28 @@ public enum EngineInstaller {
             let receiptURL = folder.appendingPathComponent("download-receipt.json")
             let receipt = (try? Data(contentsOf: receiptURL)).flatMap { try? JSONDecoder().decode(DXVKPackageReceipt.self, from: $0) }
             return DXVKPackage(title: title, folder: package, releaseTag: receipt?.asset.releaseTag)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
+    }
+
+    public static func supportsDXMTVersions(_ runtime: Runtime) -> Bool {
+        guard runtime.dxmt, let root = runtime.managedRoot else { return false }
+        return FileManager.default.fileExists(atPath: root.appendingPathComponent("barrel-wine.json").path)
+    }
+
+    public static func installedDXMTPackages(for runtime: Runtime) -> [DXMTPackage] {
+        guard supportsDXMTVersions(runtime), let managedRoot = runtime.managedRoot else { return [] }
+        let graphics = managedRoot.appendingPathComponent("graphics", isDirectory: true)
+        guard let folders = try? FileManager.default.contentsOfDirectory(at: graphics, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return [] }
+        return folders.compactMap { folder in
+            guard let values = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true,
+                  folder.lastPathComponent.hasPrefix("DXMT-") else { return nil }
+            let package = folder.appendingPathComponent("package", isDirectory: true)
+            guard (try? Wine.validateDXMT(package)) != nil else { return nil }
+            let receiptURL = folder.appendingPathComponent("download-receipt.json")
+            let receipt = (try? Data(contentsOf: receiptURL)).flatMap { try? JSONDecoder().decode(DXMTPackageReceipt.self, from: $0) }
+            let title = receipt?.asset.releaseTag ?? folder.lastPathComponent.replacingOccurrences(of: "DXMT-", with: "")
+            return DXMTPackage(title: title, folder: package, releaseTag: receipt?.asset.releaseTag)
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
     }
 
@@ -212,6 +292,81 @@ public enum EngineInstaller {
         }
     }
 
+    public static func installDXMTPackage(_ asset: EngineAsset, for runtime: Runtime, allowUnverified: Bool = false,
+                                           update: @escaping @Sendable (String, Double?) -> Void) async throws -> URL {
+        guard supportsDXMTVersions(runtime), let managedRoot = runtime.managedRoot else {
+            throw RumError.message("Install Barrel Wine to use separately managed DXMT versions.")
+        }
+        guard asset.verifiedDownload || allowUnverified else {
+            throw RumError.message("This DXMT release has no publisher checksum. Review the release before installing it.")
+        }
+        guard asset.browser_download_url.scheme == "https", isDXMTAsset(asset),
+              asset.size > 0, asset.size < 1_000_000_000 else {
+            throw RumError.message("The DXMT release asset has an unexpected URL, format, or size.")
+        }
+        if let releaseTag = asset.releaseTag,
+           let existing = installedDXMTPackages(for: runtime).first(where: { $0.releaseTag == releaseTag }) {
+            return existing.folder
+        }
+
+        let graphics = managedRoot.appendingPathComponent("graphics", isDirectory: true)
+        try FileManager.default.createDirectory(at: graphics, withIntermediateDirectories: true)
+        let staging = graphics.appendingPathComponent(".install-dxmt-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        update("Downloading DXMT (\(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file)))…", nil)
+        var request = URLRequest(url: asset.browser_download_url)
+        request.timeoutInterval = 1800
+        let (download, response) = try await URLSession.shared.download(for: request)
+        defer { try? FileManager.default.removeItem(at: download) }
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RumError.message("DXMT download failed. Please retry.") }
+        let archive = staging.appendingPathComponent("dxmt.tar.gz")
+        try FileManager.default.copyItem(at: download, to: archive)
+        let actualSize = (try FileManager.default.attributesOfItem(atPath: archive.path)[.size] as? NSNumber)?.int64Value
+        guard actualSize == asset.size else { throw RumError.message("The DXMT download is incomplete. Please retry.") }
+        update(asset.verifiedDownload ? "Verifying DXMT SHA-256…" : "Recording DXMT download checksum…", nil)
+        if asset.verifiedDownload, let digest = asset.digest { try verify(archive, digest: digest) }
+        let archiveDigest = try checksum(archive)
+        let content = staging.appendingPathComponent("content", isDirectory: true)
+        update("Unpacking DXMT…", nil)
+        try await unpack(archive, into: content)
+        guard let package = findDXMTPackage(in: content) else {
+            throw RumError.message("The DXMT archive does not contain the official Wine builtin layout. No engine files were changed.")
+        }
+        try Wine.validateDXMT(package)
+        let tag = String(asset.releaseTag ?? asset.name).map { character -> Character in
+            character.isLetter || character.isNumber || "._-".contains(character) ? character : "-"
+        }
+        let destination = graphics.appendingPathComponent("DXMT-" + String(tag), isDirectory: true)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw RumError.message("A DXMT folder for this release already exists but could not be recognized. Check its contents before removing it, then retry.")
+        }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        do {
+            let installedPackage = destination.appendingPathComponent("package", isDirectory: true)
+            try FileManager.default.moveItem(at: package, to: installedPackage)
+            let receipt = try JSONEncoder().encode(DXMTPackageReceipt(asset: asset, sha256: archiveDigest, publisherChecksumVerified: asset.verifiedDownload))
+            try receipt.write(to: destination.appendingPathComponent("download-receipt.json"), options: .atomic)
+            update("DXMT installed", 1)
+            return installedPackage
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+    }
+
+    static func findDXMTPackage(in folder: URL) -> URL? {
+        if (try? Wine.validateDXMT(folder)) != nil { return folder }
+        guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return nil }
+        for case let candidate as URL in enumerator where (try? Wine.validateDXMT(candidate)) != nil {
+            let base = folder.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+            guard candidate.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(base),
+                  (try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { continue }
+            return candidate
+        }
+        return nil
+    }
+
     static func releaseAssets(from releases: [EngineRelease], feed: EngineFeed) -> [EngineAsset] {
         releases.flatMap { release in
             release.assets.map { original in
@@ -232,7 +387,12 @@ public enum EngineInstaller {
         let filtered = assets.filter {
             let name = $0.name.lowercased()
             let supportedArchive = name.hasSuffix(".tar.xz") || name.hasSuffix(".tar.gz")
-            let feedArchive = feed == .whisky ? name.contains("libraries") && name.hasSuffix(".tar.gz") : supportedArchive
+            let feedArchive: Bool
+            switch feed {
+            case .whisky: feedArchive = name.contains("libraries") && name.hasSuffix(".tar.gz")
+            case .barrelWine: feedArchive = isBarrelWineAsset($0)
+            default: feedArchive = supportedArchive
+            }
             return feedArchive && !name.contains("32bit") && seen.insert($0.id).inserted
         }
         let newestFirst = filtered.sorted {
@@ -257,6 +417,94 @@ public enum EngineInstaller {
     static let sikarugirTemplate = "Template-1.0.24"
     static let sikarugirTemplateDigest = "sha256:4b5f89eeb9ef139936bdfad33d9b420b05ea4597cb7d63376674f7a8e171321c"
 
+    static func latestBarrelTemplateAsset() async throws -> EngineAsset {
+        let url = URL(string: "https://api.github.com/repos/Sikarugir-App/Template/releases/tags/v1.0")!
+        var request = URLRequest(url: url)
+        request.setValue("Spiced-Rum/0.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw RumError.message("Barrel Wine's macOS support libraries could not be found on GitHub. Retry engine setup when the connection is available.")
+        }
+        let release = try JSONDecoder().decode(EngineRelease.self, from: data)
+        let candidates = release.assets.filter { asset in
+            asset.browser_download_url.host?.lowercased() == "github.com"
+                && asset.browser_download_url.path.lowercased().hasPrefix("/sikarugir-app/template/releases/download/v1.0/")
+                && asset.name.range(of: #"^Template-[0-9]+(?:\.[0-9]+)+\.tar\.xz$"#, options: .regularExpression) != nil
+                && asset.verifiedDownload
+        }
+        guard let asset = candidates.sorted(by: { $0.name.compare($1.name, options: .numeric) == .orderedDescending }).first else {
+            throw RumError.message("The Template publisher has no versioned support archive with a SHA-256 digest. Barrel Wine was not installed.")
+        }
+        var selected = asset
+        selected.releaseTag = release.tag_name
+        selected.releaseName = release.name
+        selected.releaseNotes = release.body
+        return selected
+    }
+
+    static func setupBarrelWine(_ runtime: Runtime, template: EngineAsset,
+                                update: @escaping @Sendable (String, Double?) -> Void) async throws -> URL {
+        let engine = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
+        let support = engine.appendingPathComponent("support", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        update("Downloading Barrel Wine's support libraries (\(ByteCountFormatter.string(fromByteCount: template.size, countStyle: .file)))…", nil)
+        var request = URLRequest(url: template.browser_download_url)
+        request.timeoutInterval = 1800
+        let (download, response) = try await URLSession.shared.download(for: request)
+        defer { try? FileManager.default.removeItem(at: download) }
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw RumError.message("Barrel Wine's support libraries could not be downloaded. Retry engine setup when the connection is available.")
+        }
+        let actualSize = (try FileManager.default.attributesOfItem(atPath: download.path)[.size] as? NSNumber)?.int64Value
+        guard actualSize == template.size, let digest = template.digest else {
+            throw RumError.message("Barrel Wine's support-library download is incomplete or has no publisher checksum.")
+        }
+        update("Verifying support-library SHA-256…", nil)
+        try verify(download, digest: digest)
+        let templateName = template.name.replacingOccurrences(of: ".tar.xz", with: "")
+        let archive = support.appendingPathComponent(template.name)
+        try FileManager.default.copyItem(at: download, to: archive)
+        defer { try? FileManager.default.removeItem(at: archive) }
+        do {
+            update("Unpacking Barrel Wine support libraries…", nil)
+            try await unpack(archive, into: support)
+            let bundle = support.appendingPathComponent(templateName + ".app", isDirectory: true)
+            guard FileManager.default.fileExists(atPath: bundle.appendingPathComponent("Contents/Frameworks/libinotify.0.dylib").path) else {
+                throw RumError.message("The support archive does not contain the macOS Wine libraries Barrel needs.")
+            }
+            try linkTemplateLibraries(template: bundle, engine: engine)
+            struct BarrelReceipt: Encodable { let engine: String; let support: EngineAsset; let supportSHA256: String }
+            let receipt = try JSONEncoder().encode(BarrelReceipt(engine: "Barrel Wine", support: template, supportSHA256: digest))
+            try receipt.write(to: engine.appendingPathComponent("barrel-wine.json"), options: .atomic)
+            return try barrelWineLaunchers(in: engine, templateName: templateName)
+        } catch {
+            try? FileManager.default.removeItem(at: support)
+            throw error
+        }
+    }
+
+    static func barrelWineLaunchers(in engine: URL, templateName: String) throws -> URL {
+        let folder = engine.appendingPathComponent("spiced-rum-barrel-launchers", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        for binary in ["wine", "wineserver"] {
+            let script = """
+            #!/bin/sh
+            engine_dir=$(CDPATH= cd -- "$(/usr/bin/dirname "$0")/.." && pwd -P) || exit 1
+            frameworks="$engine_dir/support/\(templateName).app/Contents/Frameworks"
+            export DYLD_FALLBACK_LIBRARY_PATH="$frameworks:$frameworks/GStreamer.framework/Libraries:/usr/lib"
+            export GST_PLUGIN_PATH="$frameworks/GStreamer.framework/Libraries/gstreamer-1.0"
+            export WINEMSYNC=1
+            exec "$engine_dir/bin/\(binary)" "$@"
+
+            """
+            let file = folder.appendingPathComponent(binary)
+            try script.write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+        return folder.appendingPathComponent("wine")
+    }
+
     static func validateStandaloneSikarugir(_ wine: URL) throws {
         let module = wine.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("lib/wine/x86_64-unix/ntdll.so")
         let data = try Data(contentsOf: module, options: .mappedIfSafe)
@@ -280,7 +528,7 @@ public enum EngineInstaller {
         let support = engine.appendingPathComponent("support", isDirectory: true)
         try await unpack(file, into: support)
         let template = support.appendingPathComponent(sikarugirTemplate + ".app", isDirectory: true)
-        try linkSikarugirLibraries(template: template, engine: engine)
+        try linkTemplateLibraries(template: template, engine: engine)
         struct Receipt: Encodable { let template: String; let sha256: String; let source: URL }
         try JSONEncoder().encode(Receipt(template: sikarugirTemplate, sha256: sikarugirTemplateDigest, source: url))
             .write(to: support.appendingPathComponent("download-receipt.json"), options: .atomic)
@@ -307,7 +555,7 @@ public enum EngineInstaller {
         return folder.appendingPathComponent("wine")
     }
 
-    static func linkSikarugirLibraries(template: URL, engine: URL) throws {
+    static func linkTemplateLibraries(template: URL, engine: URL) throws {
         let fm = FileManager.default
         let frameworks = template.appendingPathComponent("Contents/Frameworks", isDirectory: true)
         guard fm.fileExists(atPath: frameworks.appendingPathComponent("libinotify.0.dylib").path) else {
@@ -320,7 +568,7 @@ public enum EngineInstaller {
             let files = try fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil).filter { $0.pathExtension == "dylib" }
             for file in files {
                 guard file.resolvingSymlinksInPath().path.hasPrefix(supportRoot) else {
-                    throw RumError.message("A Sikarugir support library points outside its package.")
+                    throw RumError.message("A Template support library points outside its package.")
                 }
                 let relative = String(file.standardizedFileURL.path.dropFirst(engine.standardizedFileURL.path.count + 1))
                 for destination in destinations {
@@ -469,6 +717,7 @@ public enum EngineInstaller {
         }
         guard asset.verifiedDownload || allowUnverified else { throw RumError.message("This older release has no publisher checksum. Choose Install legacy download and review the explanation to install it from the publisher.") }
         guard asset.browser_download_url.scheme == "https", asset.browser_download_url.host == "github.com", asset.browser_download_url.path.lowercased().hasPrefix("/\(feed.repository.lowercased())/releases/download/"), asset.size > 0, asset.size < 2_000_000_000 else { throw RumError.message("The release asset has an unexpected URL or size.") }
+        if feed == .barrelWine, !isBarrelWineAsset(asset) { throw RumError.message("This is not a supported Barrel Wine CrossOver engine release.") }
         let fm = FileManager.default
         try fm.createDirectory(at: engines, withIntermediateDirectories: true)
         let staging = engines.appendingPathComponent(".install-" + UUID().uuidString, isDirectory: true)
@@ -505,6 +754,11 @@ public enum EngineInstaller {
         if feed == .sikarugir {
             try validateStandaloneSikarugir(wine)
             runtime.executable = try await setupSikarugir(runtime, update: update)
+        } else if feed == .barrelWine {
+            update("Finding the newest Barrel Wine support libraries…", nil)
+            let template = try await latestBarrelTemplateAsset()
+            runtime.dxmt = true
+            runtime.executable = try await setupBarrelWine(runtime, template: template, update: update)
         }
         do { runtime.version = try await Wine.probe(runtime) }
         catch { throw RumError.message("The extracted engine could not start.\n\(error.localizedDescription)") }
@@ -520,9 +774,16 @@ public enum EngineInstaller {
                 update("Attaching Apple's GPTK \(evaluation.version) payload to the Wine engine…", nil)
                 runtime = try await GPTKInstaller.attachPayload(evaluation, to: runtime, into: destination)
             }
+            if feed == .barrelWine {
+                update("Finding the latest DXMT builtin release…", nil)
+                guard let dxmt = try await dxmtReleases().assets.first else {
+                    throw RumError.message("Barrel Wine was unpacked, but DXMT has no official builtin macOS release asset available. Retry setup when DXMT publishes one.")
+                }
+                runtime.dxmtPackage = try await installDXMTPackage(dxmt, for: runtime, update: update)
+            }
             // Verify again after relocation; some engines contain absolute paths.
             runtime.version = try await Wine.probe(runtime)
-            if feed != .sikarugir {
+            if feed != .sikarugir && feed != .barrelWine {
                 runtime = try await setupGraphics(runtime, update: update)
             }
             update("Preparing video playback and H.264 codecs…", nil)

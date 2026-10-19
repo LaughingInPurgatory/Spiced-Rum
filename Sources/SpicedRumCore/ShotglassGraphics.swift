@@ -5,7 +5,13 @@ public enum ShotglassGraphics {
         var choices: [Graphics] = [.wine]
         if runtime.dxvkPackage != nil, (try? Wine.validateDXVK(runtime.dxvkPackage)) != nil { choices.append(.dxvk) }
         if runtime.d3dMetal { choices.append(.metal) }
-        if runtime.dxmt { choices.append(.dxmt) }
+        if runtime.dxmt {
+            if let package = runtime.dxmtPackage {
+                if (try? Wine.validateDXMT(package)) != nil { choices.append(.dxmt) }
+            } else {
+                choices.append(.dxmt)
+            }
+        }
         return choices
     }
 
@@ -19,6 +25,7 @@ public enum ShotglassGraphics {
         guard graphics != .dxvk || (try? Wine.validateDXVK(entry.shotglass.runtime.dxvkPackage)) != nil else {
             throw RumError.message("This shotglass's DXVK package is missing or incomplete. Install a DXVK version in Runtimes & setup first.")
         }
+        if graphics == .dxmt, let package = entry.shotglass.runtime.dxmtPackage { try Wine.validateDXMT(package) }
         guard entry.shotglass.graphics != graphics else { return entry }
 
         if !entry.shotglass.initialized {
@@ -30,15 +37,21 @@ public enum ShotglassGraphics {
 
         let previous = entry.shotglass.graphics
         let oldDXVK = entry.shotglass.runtime.dxvkPackage
+        let oldDXMT = entry.shotglass.runtime.dxmtPackage
         if previous == .dxvk { try Wine.validateDXVK(oldDXVK) }
+        if previous == .dxmt, let oldDXMT { try Wine.validateDXMT(oldDXMT) }
         try await Wine.stopServer(entry)
 
         var changed = entry
         changed.shotglass.graphics = graphics
         do {
             if previous == .dxvk { try Wine.removeDXVK(from: entry.prefix) }
+            if previous == .dxmt, oldDXMT != nil { try Wine.removeDXMT(from: entry.prefix) }
             if graphics == .dxvk, let package = entry.shotglass.runtime.dxvkPackage {
                 try Wine.installDXVK(from: package, into: entry.prefix)
+            }
+            if graphics == .dxmt, let package = entry.shotglass.runtime.dxmtPackage {
+                try Wine.installDXMT(from: package, into: entry.prefix)
             }
             try changed.shotglass.save(in: changed.folder)
             return changed
@@ -51,6 +64,11 @@ public enum ShotglassGraphics {
                     try Wine.installDXVK(from: oldDXVK, into: entry.prefix)
                 } else if graphics == .dxvk {
                     try Wine.removeDXVK(from: entry.prefix)
+                }
+                if previous == .dxmt, let oldDXMT {
+                    try Wine.installDXMT(from: oldDXMT, into: entry.prefix)
+                } else if graphics == .dxmt, oldDXMT != nil {
+                    try Wine.removeDXMT(from: entry.prefix)
                 }
                 try entry.shotglass.save(in: entry.folder)
             } catch {

@@ -17,6 +17,7 @@ public struct Runtime: Codable, Identifiable, Hashable {
     public var dxmt: Bool
     public var version: String
     public var dxvkPackage: URL?
+    public var dxmtPackage: URL?
     public var managedRoot: URL?
     public var gptkVersion: String? = nil
     public var defaultGraphics: Graphics { dxvkPackage != nil ? .dxvk : dxmt ? .dxmt : d3dMetal ? .metal : .wine }

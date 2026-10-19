@@ -245,6 +245,114 @@ final class LibraryStore: ObservableObject {
         manageDXVK(for: runtime) { package.folder }
     }
 
+    func installDXMT(_ asset: EngineAsset, for runtime: Runtime, allowUnverified: Bool = false) {
+        manageDXMT(for: runtime) {
+            try await EngineInstaller.installDXMTPackage(asset, for: runtime, allowUnverified: allowUnverified) { message, progress in
+                Task { @MainActor in self.setupMessage = message; self.setupProgress = progress }
+            }
+        }
+    }
+
+    func selectDXMT(_ package: DXMTPackage, for runtime: Runtime) {
+        manageDXMT(for: runtime) { package.folder }
+    }
+
+    private func manageDXMT(for runtime: Runtime, package: @escaping () async throws -> URL) {
+        guard !setupBusy else { return }
+        setupBusy = true; setupMessage = "Preparing DXMT…"; setupProgress = nil
+        Task {
+            defer { setupBusy = false }
+            do {
+                let packageURL = try await package()
+                try await applyDXMT(packageURL, to: runtime)
+                setupMessage = "DXMT \(packageURL.deletingLastPathComponent().lastPathComponent) is active for \(runtime.name) and its shotglasses. Wine processes using DXMT were stopped; relaunch those apps to use the new version."
+            } catch { setupMessage = "DXMT setup needs attention"; self.error = error.localizedDescription }
+        }
+    }
+
+    private func applyDXMT(_ package: URL, to runtime: Runtime) async throws {
+        try Wine.validateDXMT(package)
+        guard EngineInstaller.supportsDXMTVersions(runtime), let root = runtime.managedRoot,
+              package.standardizedFileURL.path.hasPrefix(root.appendingPathComponent("graphics/").standardizedFileURL.path),
+              package.deletingLastPathComponent().lastPathComponent.hasPrefix("DXMT-") else {
+            throw RumError.message("Choose an installed DXMT version for this Barrel Wine engine.")
+        }
+        guard let runtimeIndex = catalog.runtimes.firstIndex(where: { $0.id == runtime.id }) else {
+            throw RumError.message("This runtime is no longer registered. Refresh the runtime list and try again.")
+        }
+        let oldRuntime = catalog.runtimes[runtimeIndex]
+        guard oldRuntime.managedRoot == runtime.managedRoot else {
+            throw RumError.message("This runtime changed while DXMT was being prepared. Refresh Runtimes & setup and retry.")
+        }
+        var affected: [ShotglassEntry] = []
+        for folder in catalog.shotglassFolders {
+            let shotglass = try Shotglass.load(from: folder)
+            if shotglass.runtime.id == runtime.id { affected.append(ShotglassEntry(shotglass: shotglass, folder: folder)) }
+        }
+        guard !affected.contains(where: \.engineChangePending) else {
+            throw RumError.message("A shotglass has an unfinished engine change. Restore its backup before changing DXMT versions.")
+        }
+        guard !affected.contains(where: { busy.contains($0.id) }) else {
+            throw RumError.message("Wait for the current shotglass operation to finish before changing DXMT versions.")
+        }
+
+        var updatedRuntime = oldRuntime
+        updatedRuntime.dxmtPackage = package
+        let activeDXMT = affected.filter { $0.shotglass.initialized && $0.shotglass.graphics == .dxmt }
+        for entry in activeDXMT {
+            if let oldPackage = entry.shotglass.runtime.dxmtPackage { try Wine.validateDXMT(oldPackage) }
+        }
+        busy.formUnion(affected.map(\.id))
+        defer { busy.subtract(affected.map(\.id)) }
+        var changed: [(original: ShotglassEntry, updated: ShotglassEntry, replacedPrefixDLLs: Bool)] = []
+        do {
+            for original in affected {
+                var updated = original
+                updated.shotglass.runtime = updatedRuntime
+                var replacedPrefixDLLs = false
+                if original.shotglass.initialized && original.shotglass.graphics == .dxmt {
+                    try await Wine.stopServer(original)
+                    do {
+                        if original.shotglass.runtime.dxmtPackage != nil { try Wine.removeDXMT(from: original.prefix) }
+                        try Wine.installDXMT(from: package, into: original.prefix)
+                        replacedPrefixDLLs = true
+                    } catch {
+                        let failure = error
+                        do {
+                            try Wine.removeDXMT(from: original.prefix)
+                            if let oldPackage = original.shotglass.runtime.dxmtPackage { try Wine.installDXMT(from: oldPackage, into: original.prefix) }
+                        } catch {
+                            throw RumError.message("DXMT could not be replaced in \(original.shotglass.name) and its previous DLL could not be restored. Both runtime packages were preserved.\n\(failure.localizedDescription)\nRecovery: \(error.localizedDescription)")
+                        }
+                        throw failure
+                    }
+                }
+                changed.append((original, updated, replacedPrefixDLLs))
+                try updated.shotglass.save(in: updated.folder)
+                replaceEntry(updated)
+            }
+            var updatedCatalog = catalog
+            updatedCatalog.runtimes[runtimeIndex] = updatedRuntime
+            try persist(updatedCatalog)
+        } catch {
+            let failure = error
+            do {
+                for change in changed.reversed() {
+                    if change.replacedPrefixDLLs {
+                        try await Wine.stopServer(change.updated)
+                        try Wine.removeDXMT(from: change.original.prefix)
+                        if let oldPackage = change.original.shotglass.runtime.dxmtPackage { try Wine.installDXMT(from: oldPackage, into: change.original.prefix) }
+                    }
+                    try change.original.shotglass.save(in: change.original.folder)
+                    replaceEntry(change.original)
+                }
+            } catch {
+                throw RumError.message("DXMT changed part of this engine's shotglasses and automatic rollback could not finish. Existing versions were preserved.\n\(failure.localizedDescription)\nRecovery: \(error.localizedDescription)")
+            }
+            throw failure
+        }
+    }
+
     private func manageDXVK(for runtime: Runtime, package: @escaping () async throws -> URL) {
         guard !setupBusy else { return }
         setupBusy = true; setupMessage = "Preparing DXVK…"; setupProgress = nil

@@ -31,6 +31,10 @@ struct EngineDownloadView: View {
             if feed == .sikarugir {
                 Text("Spiced-Rum automatically prepares support libraries for standalone-compatible builds. Wine 11 requires Sikarugir's own launcher and is currently unavailable here. Supported builds start with Wine default graphics; optional wrapper renderers are not enabled. Newest uploads appear first.").font(.caption).foregroundStyle(.secondary)
             }
+            if feed == .barrelWine {
+                Text("Barrel Wine is built from CrossOver Wine sources for Apple Silicon and macOS 14+. Spiced-Rum installs its matching macOS support libraries and the latest official DXMT builtin automatically. You can keep older and newer DXMT versions side by side and switch them in Runtimes & setup.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             TextField("Filter versions or engine names", text: $filter).textFieldStyle(.roundedBorder)
             if loading && assets.isEmpty { ProgressView("Checking publisher releases…").frame(maxWidth: .infinity, minHeight: 100) }
             else {
@@ -46,6 +50,7 @@ struct EngineDownloadView: View {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(asset.displayName(in: feed)).fontWeight(.medium).lineLimit(2)
                                     if feed == .whisky, let tag = asset.releaseTag { Text("Runtime release \(tag) · \(asset.name)").font(.caption).foregroundStyle(.secondary) }
+                                    if feed == .barrelWine, let tag = asset.releaseTag { Text("Wine build \(tag) · support libraries and latest DXMT set up automatically").font(.caption).foregroundStyle(.secondary) }
                                     if asset.id == assets.first(where: { $0.name.contains("wine-staging") && $0.verifiedDownload })?.id { Text("Recommended starting point").font(.caption).foregroundStyle(.orange) }
                                     if asset.requiresSikarugirLauncher { Text("Requires Sikarugir's launcher · not yet supported").font(.caption).foregroundStyle(.orange) }
                                     if asset.requiresAppleGPTKPayload { Text("GPTK-capable · Apple's evaluation payload is attached automatically during install").font(.caption).foregroundStyle(.orange) }
@@ -318,6 +323,122 @@ struct DXVKVersionView: View {
         loading = true; error = nil
         do {
             let result = try await EngineInstaller.dxvkReleases(page: page)
+            guard requestGeneration == generation, !Task.isCancelled else { return }
+            var seen = Set(assets.map(\.id))
+            assets.append(contentsOf: result.assets.filter { seen.insert($0.id).inserted })
+            nextPage = result.nextPage
+        } catch {
+            guard requestGeneration == generation, !Task.isCancelled else { return }
+            self.error = error.localizedDescription
+        }
+        loading = false
+    }
+}
+
+struct DXMTVersionView: View {
+    @EnvironmentObject var store: LibraryStore
+    @Environment(\.dismiss) var dismiss
+    let runtime: Runtime
+    @State private var installed: [DXMTPackage] = []
+    @State private var assets: [EngineAsset] = []
+    @State private var loading = true
+    @State private var error: String?
+    @State private var filter = ""
+    @State private var nextPage: Int?
+    @State private var generation = UUID()
+    @State private var uncheckedAsset: EngineAsset?
+
+    private var currentRuntime: Runtime { store.catalog.runtimes.first(where: { $0.id == runtime.id }) ?? runtime }
+    private var currentPackagePath: String { currentRuntime.dxmtPackage?.standardizedFileURL.path ?? "" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("DXMT versions · \(runtime.name)").font(.title2.weight(.semibold))
+            Text("DXMT translates Direct3D 10/11 to Metal. Spiced-Rum downloads the official Wine builtin release and keeps versions side by side. Changing the selected version updates this engine and its shotglasses, stops any running Wine processes in those shotglasses, and restores Wine's original winemetal.dll when you switch away from DXMT.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Link("Official 3Shain DXMT releases ↗", destination: URL(string: "https://github.com/3Shain/dxmt/releases")!)
+            if !installed.isEmpty {
+                Text("Installed versions").font(.headline)
+                ForEach(installed) { package in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(package.title).fontWeight(.medium)
+                            if package.folder.standardizedFileURL.path == currentPackagePath { Text("Currently selected").font(.caption).foregroundStyle(.green) }
+                        }
+                        Spacer()
+                        Button(package.folder.standardizedFileURL.path == currentPackagePath ? "Selected" : "Use version") {
+                            store.selectDXMT(package, for: currentRuntime)
+                        }.disabled(store.setupBusy || package.folder.standardizedFileURL.path == currentPackagePath)
+                    }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            Text("Available downloads").font(.headline)
+            TextField("Filter DXMT releases", text: $filter).textFieldStyle(.roundedBorder)
+            if loading && assets.isEmpty { ProgressView("Checking official DXMT releases…").frame(maxWidth: .infinity, minHeight: 90) }
+            else {
+                ScrollView {
+                    LazyVStack(spacing: 9) {
+                        ForEach(assets.filter { filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter) || ($0.releaseTag?.localizedCaseInsensitiveContains(filter) ?? false) }) { asset in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(asset.releaseTag ?? asset.name).fontWeight(.medium).lineLimit(2)
+                                    Text("\(asset.name) · \(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file)) · \(asset.verifiedDownload ? "publisher SHA-256" : "no publisher checksum")")
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                }
+                                Spacer()
+                                if let package = installed.first(where: { $0.releaseTag != nil && $0.releaseTag == asset.releaseTag }) {
+                                    Button(package.folder.standardizedFileURL.path == currentPackagePath ? "Selected" : "Use installed") {
+                                        store.selectDXMT(package, for: currentRuntime)
+                                    }.disabled(store.setupBusy || package.folder.standardizedFileURL.path == currentPackagePath)
+                                } else {
+                                    Button(asset.verifiedDownload ? "Download & apply" : "Install legacy release…") {
+                                        if asset.verifiedDownload { store.installDXMT(asset, for: currentRuntime) }
+                                        else { uncheckedAsset = asset }
+                                    }.disabled(store.setupBusy)
+                                }
+                            }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        if loading { ProgressView("Loading older releases…") }
+                        if nextPage != nil { Button("Load older releases") { Task { await load(reset: false) } }.disabled(loading || store.setupBusy) }
+                    }
+                }.frame(height: 225)
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red); Button("Retry") { Task { await load() } }.disabled(loading) }
+            if store.setupBusy {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(store.setupMessage).font(.callout)
+                    if let progress = store.setupProgress { ProgressView(value: progress) } else { ProgressView().controlSize(.small) }
+                }
+            }
+            if !store.setupBusy, let error = store.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            HStack {
+                Button("Refresh releases") { Task { await load() } }.disabled(loading || store.setupBusy)
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.setupBusy)
+            }
+        }.padding(28).frame(width: 700)
+            .task { installed = EngineInstaller.installedDXMTPackages(for: currentRuntime); await load() }
+            .onChange(of: store.setupBusy) { _, busy in
+                if !busy { installed = EngineInstaller.installedDXMTPackages(for: currentRuntime) }
+            }
+            .interactiveDismissDisabled(store.setupBusy)
+            .confirmationDialog("Install DXMT without a publisher checksum?", isPresented: Binding(get: { uncheckedAsset != nil }, set: { if !$0 { uncheckedAsset = nil } }), titleVisibility: .visible) {
+                if let asset = uncheckedAsset {
+                    Button("Install from 3Shain") { store.installDXMT(asset, for: currentRuntime, allowUnverified: true); uncheckedAsset = nil }
+                }
+                Button("Cancel", role: .cancel) { uncheckedAsset = nil }
+            } message: {
+                Text("This archive comes from 3Shain's HTTPS release page, but has no publisher checksum. Spiced-Rum records its local checksum and validates the Wine builtin layout, but cannot authenticate the archive against a publisher checksum. Install only if you trust this release.")
+            }
+    }
+
+    private func load(reset: Bool = true) async {
+        let page = reset ? 1 : (nextPage ?? 1)
+        if reset { generation = UUID(); assets = []; nextPage = nil }
+        let requestGeneration = generation
+        loading = true; error = nil
+        do {
+            let result = try await EngineInstaller.dxmtReleases(page: page)
             guard requestGeneration == generation, !Task.isCancelled else { return }
             var seen = Set(assets.map(\.id))
             assets.append(contentsOf: result.assets.filter { seen.insert($0.id).inserted })

@@ -133,6 +133,136 @@ final class ShotglassTests: XCTestCase {
         XCTAssertEqual(args, ["-x86_64", "/usr/bin/true", "/Games/a name;$(whoami).exe"])
     }
 
+    func testDXMTBuiltinEnvironmentAndPackageValidation() throws {
+        let root = try fixture()
+        let package = root.appendingPathComponent("graphics/DXMT-v0.80/package", isDirectory: true)
+        for file in ["x86_64-unix/winemetal.so", "x86_64-windows/winemetal.dll", "x86_64-windows/d3d11.dll", "x86_64-windows/dxgi.dll"] {
+            let path = package.appendingPathComponent(file)
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data([1]).write(to: path)
+        }
+        try Wine.validateDXMT(package)
+        var engine = runtime()
+        engine.dxmt = true
+        engine.dxmtPackage = package
+        var entry = try ShotglassFiles.create(Shotglass(name: "DXMT", runtime: engine, graphics: .dxmt), parent: root)
+        XCTAssertEqual(Wine.environment(for: entry)["WINEDLLOVERRIDES"], "dxgi,d3d10core,d3d11,winemetal=b")
+        XCTAssertEqual(Wine.environment(for: entry)["WINEDLLPATH_PREPEND"], package.path)
+        XCTAssertEqual(Wine.environment(for: entry)["WINEMSYNC"], "1")
+        XCTAssertTrue(ShotglassGraphics.choices(for: engine).contains(.dxmt))
+        try FileManager.default.removeItem(at: package.appendingPathComponent("x86_64-windows/dxgi.dll"))
+        XCTAssertFalse(ShotglassGraphics.choices(for: engine).contains(.dxmt))
+        entry.shotglass.graphics = .wine
+    }
+
+    func testDXMTWineMetalDLLCanBeUpdatedAndRestoredWithoutLosingWineCopy() throws {
+        let root = try fixture()
+        let prefix = root.appendingPathComponent("prefix", isDirectory: true)
+        let system32 = prefix.appendingPathComponent("drive_c/windows/system32", isDirectory: true)
+        let syswow64 = prefix.appendingPathComponent("drive_c/windows/syswow64", isDirectory: true)
+        try FileManager.default.createDirectory(at: system32, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: syswow64, withIntermediateDirectories: true)
+        let original64 = system32.appendingPathComponent("winemetal.dll")
+        let original32 = syswow64.appendingPathComponent("winemetal.dll")
+        try Data("Wine 64-bit builtin".utf8).write(to: original64)
+        try Data("Wine 32-bit builtin".utf8).write(to: original32)
+
+        func package(_ name: String, dll: String) throws -> URL {
+            let folder = root.appendingPathComponent(name, isDirectory: true)
+            for (path, contents) in [
+                ("x86_64-unix/winemetal.so", "unix"),
+                ("x86_64-windows/winemetal.dll", dll),
+                ("x86_64-windows/d3d11.dll", "d3d11"),
+                ("x86_64-windows/dxgi.dll", "dxgi"),
+                ("i386-windows/winemetal.dll", "32-bit " + dll)
+            ] {
+                let destination = folder.appendingPathComponent(path)
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(contents.utf8).write(to: destination)
+            }
+            return folder
+        }
+        let first = try package("DXMT-v0.80", dll: "DXMT 0.80")
+        let second = try package("DXMT-v0.81", dll: "DXMT 0.81")
+
+        try Wine.installDXMT(from: first, into: prefix)
+        XCTAssertEqual(try String(contentsOf: original64), "DXMT 0.80")
+        XCTAssertEqual(try String(contentsOf: original32), "32-bit DXMT 0.80")
+        XCTAssertEqual(try String(contentsOf: original64.appendingPathExtension("spicedrum-original")), "Wine 64-bit builtin")
+        XCTAssertEqual(try String(contentsOf: original32.appendingPathExtension("spicedrum-original")), "Wine 32-bit builtin")
+
+        try Wine.removeDXMT(from: prefix)
+        try Wine.installDXMT(from: second, into: prefix)
+        XCTAssertEqual(try String(contentsOf: original64), "DXMT 0.81")
+        XCTAssertEqual(try String(contentsOf: original64.appendingPathExtension("spicedrum-original")), "Wine 64-bit builtin")
+        try Wine.removeDXMT(from: prefix)
+        XCTAssertEqual(try String(contentsOf: original64), "Wine 64-bit builtin")
+        XCTAssertEqual(try String(contentsOf: original32), "Wine 32-bit builtin")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: original64.appendingPathExtension("spicedrum-original").path))
+    }
+
+    func testDXMTAndBarrelReleaseFeedsOnlyExposeSupportedArchives() throws {
+        func asset(_ id: Int, _ name: String, _ url: String, tag: String? = nil) -> EngineAsset {
+            var result = EngineAsset(id: id, name: name, size: 100, digest: "sha256:" + String(repeating: "a", count: 64), browser_download_url: URL(string: url)!)
+            result.releaseTag = tag
+            return result
+        }
+        let barrel = asset(1, "barrel-wine-26.3.0.tar.xz", "https://github.com/MrTuNNe/Barrel/releases/download/wine-cx-26.3.0/barrel-wine-26.3.0.tar.xz", tag: "wine-cx-26.3.0")
+        let unrelatedBarrel = asset(2, "Barrel-0.4.2.dmg", "https://github.com/MrTuNNe/Barrel/releases/download/v0.4.2/Barrel-0.4.2.dmg", tag: "v0.4.2")
+        let barrelPage = EngineInstaller.releasePage([barrel, unrelatedBarrel], feed: .barrelWine, page: 1, link: nil)
+        XCTAssertEqual(barrelPage.assets.map(\.id), [1])
+        XCTAssertEqual(barrel.installedName(in: .barrelWine), "Barrel Wine · CrossOver 26.3.0")
+
+        let dxmt = asset(3, "dxmt-v0.80-builtin.tar.gz", "https://github.com/3Shain/dxmt/releases/download/v0.80/dxmt-v0.80-builtin.tar.gz", tag: "v0.80")
+        let source = asset(4, "Source code (tar.gz)", "https://github.com/3Shain/dxmt/archive/refs/tags/v0.80.tar.gz", tag: "v0.80")
+        let dxmtPage = EngineInstaller.dxmtReleasePage([dxmt, source], page: 1, link: nil)
+        XCTAssertEqual(dxmtPage.assets.map(\.id), [3])
+    }
+
+    func testDXMTPackageDiscoveryAndRuntimeMigration() throws {
+        let root = try fixture()
+        let managed = root.appendingPathComponent("Engines/Barrel", isDirectory: true)
+        let package = managed.appendingPathComponent("graphics/DXMT-v0.80/package", isDirectory: true)
+        try FileManager.default.createDirectory(at: managed, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: managed.appendingPathComponent("barrel-wine.json"))
+        for file in ["x86_64-unix/winemetal.so", "x86_64-windows/winemetal.dll", "x86_64-windows/d3d11.dll", "x86_64-windows/dxgi.dll"] {
+            let path = package.appendingPathComponent(file)
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data([1]).write(to: path)
+        }
+        var engine = Runtime(name: "Barrel Wine · CrossOver 26.3.0", executable: managed.appendingPathComponent("bin/wine"), useRosetta: true, d3dMetal: false, dxmt: true, version: "Wine")
+        engine.managedRoot = managed
+        engine.dxmtPackage = package
+        XCTAssertTrue(EngineInstaller.supportsDXMTVersions(engine))
+        XCTAssertEqual(EngineInstaller.installedDXMTPackages(for: engine).map(\.title), ["v0.80"])
+
+        var oldFields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(engine)) as? [String: Any])
+        oldFields.removeValue(forKey: "dxmtPackage")
+        let migrated = try JSONDecoder().decode(Runtime.self, from: JSONSerialization.data(withJSONObject: oldFields))
+        XCTAssertNil(migrated.dxmtPackage)
+        XCTAssertTrue(migrated.dxmt)
+    }
+
+    func testBarrelWineLauncherSetsRuntimeEnvironmentAfterRosettaStarts() throws {
+        let root = try fixture().appendingPathComponent("Barrel", isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("bin"), withIntermediateDirectories: true)
+        let wine = try EngineInstaller.barrelWineLaunchers(in: root, templateName: "Template-1.0.24")
+        let script = try String(contentsOf: wine, encoding: .utf8)
+        XCTAssertTrue(script.contains("DYLD_FALLBACK_LIBRARY_PATH=\"$frameworks:$frameworks/GStreamer.framework/Libraries:/usr/lib\""))
+        XCTAssertTrue(script.contains("export WINEMSYNC=1"))
+        XCTAssertTrue(script.contains("exec \"$engine_dir/bin/wine\" \"$@\""))
+
+        var engine = Runtime(name: "Barrel Wine", executable: wine, useRosetta: true, d3dMetal: false, dxmt: true, version: "Wine")
+        engine.managedRoot = root
+        try Data("{}".utf8).write(to: root.appendingPathComponent("barrel-wine.json"))
+        let entry = try ShotglassFiles.create(Shotglass(name: "Barrel", runtime: engine, graphics: .dxmt), parent: root.appendingPathComponent("shotglasses"))
+        XCTAssertEqual(Wine.environment(for: entry)["WINEMSYNC"], "1")
+        let (binary, arguments) = Wine.command(runtime: engine, arguments: ["--version"])
+        XCTAssertEqual(binary.path, "/usr/bin/arch")
+        XCTAssertEqual(arguments, ["-x86_64", wine.path, "--version"])
+        XCTAssertTrue(Wine.environment(for: entry)["PATH"]?.contains(root.appendingPathComponent("bin").path) == true)
+    }
+
     func testRejectsLinuxRuntimeBeforeExecution() throws {
         let elf = try fixture().appendingPathComponent("wine")
         try Data([0x7f, 0x45, 0x4c, 0x46, 0]).write(to: elf)
@@ -258,8 +388,8 @@ final class ShotglassTests: XCTestCase {
         for name in ["libinotify.0.dylib", "libfreetype.6.dylib"] { try Data(name.utf8).write(to: frameworks.appendingPathComponent(name)) }
         try Data("media".utf8).write(to: media.appendingPathComponent("libgstreamer-1.0.0.dylib"))
         try Data("engine original".utf8).write(to: engine.appendingPathComponent("lib/libfreetype.6.dylib"))
-        try EngineInstaller.linkSikarugirLibraries(template: template, engine: engine)
-        try EngineInstaller.linkSikarugirLibraries(template: template, engine: engine)
+        try EngineInstaller.linkTemplateLibraries(template: template, engine: engine)
+        try EngineInstaller.linkTemplateLibraries(template: template, engine: engine)
         try FileManager.default.createDirectory(at: engine.appendingPathComponent("bin"), withIntermediateDirectories: false)
         try FileManager.default.createSymbolicLink(at: engine.appendingPathComponent("bin/wine"), withDestinationURL: URL(fileURLWithPath: "/usr/bin/printf"))
         _ = try EngineInstaller.sikarugirLaunchers(in: engine)
@@ -279,7 +409,7 @@ final class ShotglassTests: XCTestCase {
         try Data().write(to: external)
         let movedTemplate = moved.appendingPathComponent("support/Test.app")
         try FileManager.default.createSymbolicLink(at: movedTemplate.appendingPathComponent("Contents/Frameworks/escape.dylib"), withDestinationURL: external)
-        XCTAssertThrowsError(try EngineInstaller.linkSikarugirLibraries(template: movedTemplate, engine: moved))
+        XCTAssertThrowsError(try EngineInstaller.linkTemplateLibraries(template: movedTemplate, engine: moved))
         let module = moved.appendingPathComponent("lib/wine/x86_64-unix/ntdll.so")
         try Data("SikarugirAppWine11".utf8).write(to: module)
         XCTAssertThrowsError(try EngineInstaller.validateStandaloneSikarugir(moved.appendingPathComponent("bin/wine"))) { error in

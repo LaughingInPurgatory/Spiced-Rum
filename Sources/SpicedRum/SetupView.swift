@@ -12,6 +12,7 @@ struct SetupView: View {
     @State private var runtimePendingRemoval: Runtime?
     @State private var runtimeRemovalDescription = ""
     @State private var dxvkRuntime: Runtime?
+    @State private var dxmtRuntime: Runtime?
 
     var body: some View {
         ScrollView {
@@ -176,6 +177,7 @@ struct SetupView: View {
         .sheet(isPresented: $showRuntime) { AddRuntimeView(source: chosenSource) }
         .sheet(isPresented: $showDownload) { EngineDownloadView() }
         .sheet(item: $dxvkRuntime) { DXVKVersionView(runtime: $0) }
+        .sheet(item: $dxmtRuntime) { DXMTVersionView(runtime: $0) }
         .sheet(isPresented: $showRosetta) { RosettaSetupView() }
         .confirmationDialog("Remove this engine?", isPresented: Binding(
             get: { runtimePendingRemoval != nil },
@@ -241,6 +243,31 @@ struct SetupView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 10) {
+                Text("DXMT · Metal").font(.subheadline.weight(.semibold))
+                Text("Barrel Wine includes the Wine support needed for DXMT. Spiced-Rum installs the latest official DXMT builtin with Barrel Wine; use this section to install newer or older DXMT builds and switch versions for its shotglasses.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                let dxmtRuntimes = store.catalog.runtimes.filter(EngineInstaller.supportsDXMTVersions)
+                if dxmtRuntimes.isEmpty {
+                    Text("Install Barrel Wine to manage official DXMT versions here.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    ForEach(dxmtRuntimes) { runtime in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(runtime.name).fontWeight(.medium)
+                                Text(runtime.dxmtPackage.map { "Selected: DXMT · \(dxmtVersionName($0))" } ?? "No DXMT version selected")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Manage versions…") { dxmtRuntime = runtime }.disabled(store.setupBusy || !store.storageAvailable)
+                        }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
                 Text("D3DMetal · Apple GPTK").font(.subheadline.weight(.semibold))
                 Text("Apple distributes D3DMetal inside versioned GPTK evaluation images. Each version is installed as its own verified Wine engine, so a shotglass can switch versions with Change engine.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -282,6 +309,10 @@ struct SetupView: View {
     private func dxvkVersionName(_ package: URL) -> String {
         let folder = package.lastPathComponent == "package" ? package.deletingLastPathComponent() : package
         return folder.lastPathComponent.hasPrefix("DXVK-") ? String(folder.lastPathComponent.dropFirst(5)) : folder.lastPathComponent
+    }
+
+    private func dxmtVersionName(_ package: URL) -> String {
+        package.deletingLastPathComponent().lastPathComponent.replacingOccurrences(of: "DXMT-", with: "")
     }
 }
 

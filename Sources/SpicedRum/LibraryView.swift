@@ -73,7 +73,7 @@ struct LibraryView: View {
                     Label("Made for Apple Silicon", systemImage: "apple.logo").font(.caption)
                     Text("Developed by Laughing In Purgatory").font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("DEVELOPMENT PREVIEW  0.1").font(.system(size: 9, weight: .medium)).tracking(1).foregroundStyle(.tertiary)
+                    Text("VERSION  0.1.3").font(.system(size: 9, weight: .medium)).tracking(1).foregroundStyle(.tertiary)
                 }.padding(10)
             }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(red: 0.075, green: 0.079, blue: 0.087))
             .navigationSplitViewColumnWidth(240)

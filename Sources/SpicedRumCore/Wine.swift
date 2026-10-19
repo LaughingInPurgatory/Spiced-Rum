@@ -16,10 +16,15 @@ public enum Wine {
     public static func environment(for entry: ShotglassEntry) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         // Do not inherit another Wine session's prefix or renderer overrides.
-        for key in ["WINEPREFIX", "WINEARCH", "WINEDLLOVERRIDES", "WINESERVER", "WINELOADER", "DXVK_CONFIG_FILE", "DXVK_LOG_PATH"] { env.removeValue(forKey: key) }
+        for key in ["WINEPREFIX", "WINEARCH", "WINEDLLOVERRIDES", "WINESERVER", "WINELOADER", "WINEDLLPATH_PREPEND", "WINEMSYNC", "DXVK_CONFIG_FILE", "DXVK_LOG_PATH"] { env.removeValue(forKey: key) }
         env["WINEPREFIX"] = entry.prefix.path
-        env["PATH"] = entry.shotglass.runtime.executable.deletingLastPathComponent().path + ":/usr/bin:/bin:/usr/sbin:/sbin"
+        let runtime = entry.shotglass.runtime
+        let engine = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
+        let launcher = runtime.executable.deletingLastPathComponent().lastPathComponent
+        let wineBin = ["spiced-rum-launchers", "spiced-rum-barrel-launchers"].contains(launcher) ? engine.appendingPathComponent("bin").path : runtime.executable.deletingLastPathComponent().path
+        env["PATH"] = runtime.executable.deletingLastPathComponent().path + ":" + wineBin + ":/usr/bin:/bin:/usr/sbin:/sbin"
         env["WINEDEBUG"] = "-all,err+all"
+        if FileManager.default.fileExists(atPath: engine.appendingPathComponent("barrel-wine.json").path) { env["WINEMSYNC"] = "1" }
         if let framework = MediaSupport.framework(for: entry.shotglass.runtime) {
             env.merge(MediaSupport.environment(framework: framework, registry: entry.folder.appendingPathComponent("gstreamer-registry-x86_64-v1.bin"))) { _, new in new }
         }
@@ -31,12 +36,22 @@ public enum Wine {
             env["DXVK_LOG_PATH"] = entry.folder.path
         case .metal:
             env["WINEDLLOVERRIDES"] = "dxgi,d3d11,d3d12=n,b"
-        case .dxmt: env["WINEDLLOVERRIDES"] = "dxgi,d3d10core,d3d11,winemetal=b"
+        case .dxmt:
+            env["WINEDLLOVERRIDES"] = "dxgi,d3d10core,d3d11,winemetal=b"
+            if let package = runtime.dxmtPackage {
+                env["WINEDLLPATH_PREPEND"] = package.path
+                env["WINEMSYNC"] = "1"
+            }
         }
         return env
     }
 
     public static func command(runtime: Runtime, arguments: [String]) -> (URL, [String]) {
+        if runtime.executable.deletingLastPathComponent().lastPathComponent == "spiced-rum-barrel-launchers" {
+            return runtime.useRosetta
+                ? (URL(fileURLWithPath: "/usr/bin/arch"), ["-x86_64", runtime.executable.path] + arguments)
+                : (runtime.executable, arguments)
+        }
         if let framework = MediaSupport.framework(for: runtime) {
             let engine = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
             // Our Sikarugir launchers set a different dyld path. Launch their native
@@ -99,6 +114,7 @@ public enum Wine {
         if entry.shotglass.graphics == .dxmt && !entry.shotglass.runtime.dxmt {
             throw RumError.message("DXMT requires a runtime or launcher with DXMT already integrated.")
         }
+        if entry.shotglass.graphics == .dxmt, let package = entry.shotglass.runtime.dxmtPackage { try validateDXMT(package) }
         if entry.shotglass.graphics == .dxvk { try validateDXVK(dxvk) }
         // Renderer DLLs are installed only after Wine creates its original prefix.
         var plain = entry; plain.shotglass.graphics = .wine
@@ -118,6 +134,7 @@ public enum Wine {
         let registry = try String(contentsOf: entry.prefix.appendingPathComponent("system.reg"), encoding: .utf8)
         guard registry.contains("#arch=win64") else { throw RumError.message("This runtime created a 32-bit prefix. Spiced-Rum requires a Windows x64-capable macOS engine.") }
         if entry.shotglass.graphics == .dxvk, let dxvk { try installDXVK(from: dxvk, into: entry.prefix) }
+        if entry.shotglass.graphics == .dxmt, let package = entry.shotglass.runtime.dxmtPackage { try installDXMT(from: package, into: entry.prefix) }
         var ready = entry; ready.shotglass.initialized = true
         try ready.shotglass.save(in: ready.folder)
         return ready
@@ -150,6 +167,16 @@ public enum Wine {
         }
     }
 
+    public static func removeDXMT(from prefix: URL) throws {
+        let fm = FileManager.default
+        for target in ["system32", "syswow64"] {
+            let file = prefix.appendingPathComponent("drive_c/windows/\(target)/winemetal.dll")
+            let backup = file.appendingPathExtension("spicedrum-original")
+            if (try? fm.attributesOfItem(atPath: file.path)) != nil { try fm.removeItem(at: file) }
+            if (try? fm.attributesOfItem(atPath: backup.path)) != nil { try fm.moveItem(at: backup, to: file) }
+        }
+    }
+
     public static func validateDXVK(_ folder: URL?) throws {
         guard let folder else { throw RumError.message("Choose an extracted macOS DXVK package containing x64/d3d11.dll and x64/d3d10core.dll. Its Wine runtime must also supply MoltenVK.") }
         for arch in ["x64", "x32"] {
@@ -158,6 +185,14 @@ public enum Wine {
                 guard FileManager.default.isReadableFile(atPath: folder.appendingPathComponent("\(arch)/\(dll)").path) else {
                     throw RumError.message("DXVK package is missing \(arch)/\(dll).")
                 }
+            }
+        }
+    }
+
+    public static func validateDXMT(_ folder: URL) throws {
+        for relative in ["x86_64-unix/winemetal.so", "x86_64-windows/winemetal.dll", "x86_64-windows/d3d11.dll", "x86_64-windows/dxgi.dll"] {
+            guard FileManager.default.isReadableFile(atPath: folder.appendingPathComponent(relative).path) else {
+                throw RumError.message("DXMT package is missing its Wine builtin component \(relative).")
             }
         }
     }
@@ -176,6 +211,27 @@ public enum Wine {
                     else { try fm.removeItem(at: destination) }
                 }
                 try fm.copyItem(at: file, to: destination)
+            }
+        }
+    }
+
+    public static func installDXMT(from source: URL, into prefix: URL) throws {
+        try validateDXMT(source)
+        let fm = FileManager.default
+        for (arch, target) in [("x86_64-windows", "system32"), ("i386-windows", "syswow64")] {
+            let sourceDLL = source.appendingPathComponent("\(arch)/winemetal.dll")
+            let destination = prefix.appendingPathComponent("drive_c/windows/\(target)/winemetal.dll")
+            let backup = destination.appendingPathExtension("spicedrum-original")
+            if fm.isReadableFile(atPath: sourceDLL.path) {
+                try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if (try? fm.attributesOfItem(atPath: destination.path)) != nil {
+                    if (try? fm.attributesOfItem(atPath: backup.path)) == nil { try fm.moveItem(at: destination, to: backup) }
+                    else { try fm.removeItem(at: destination) }
+                }
+                try fm.copyItem(at: sourceDLL, to: destination)
+            } else if (try? fm.attributesOfItem(atPath: backup.path)) != nil {
+                if (try? fm.attributesOfItem(atPath: destination.path)) != nil { try fm.removeItem(at: destination) }
+                try fm.moveItem(at: backup, to: destination)
             }
         }
     }

@@ -154,6 +154,36 @@ final class EngineSwitchTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: originalDLL.appendingPathExtension("spicedrum-original")), Data("Wine builtin".utf8))
     }
 
+    func testShotglassCanEnableAndDisableDXMTWithWineDLLRecovery() async throws {
+        let root = try fixture()
+        var runtime = try engine(in: root, name: "dxmt")
+        runtime.dxmt = true
+        let package = root.appendingPathComponent("DXMT-v0.80", isDirectory: true)
+        for (path, contents) in [
+            ("x86_64-unix/winemetal.so", "unix"),
+            ("x86_64-windows/winemetal.dll", "DXMT"),
+            ("x86_64-windows/d3d11.dll", "d3d11"),
+            ("x86_64-windows/dxgi.dll", "dxgi")
+        ] {
+            let destination = package.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(contents.utf8).write(to: destination)
+        }
+        runtime.dxmtPackage = package
+        let entry = try shotglass(in: root, runtime: runtime)
+        let winemetal = entry.prefix.appendingPathComponent("drive_c/windows/system32/winemetal.dll")
+        try Data("Wine winemetal".utf8).write(to: winemetal)
+
+        let enabled = try await ShotglassGraphics.change(entry, to: .dxmt)
+        XCTAssertEqual(try String(contentsOf: winemetal), "DXMT")
+        XCTAssertEqual(try String(contentsOf: winemetal.appendingPathExtension("spicedrum-original")), "Wine winemetal")
+
+        let restored = try await ShotglassGraphics.change(enabled, to: .wine)
+        XCTAssertEqual(restored.shotglass.graphics, .wine)
+        XCTAssertEqual(try String(contentsOf: winemetal), "Wine winemetal")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: winemetal.appendingPathExtension("spicedrum-original").path))
+    }
+
     func testD3DMetalCannotBeSelectedWhenEngineDoesNotSupportIt() async throws {
         let root = try fixture()
         let runtime = try engine(in: root, name: "wine-only")

@@ -7,9 +7,13 @@ public enum MediaSupport {
 
     public static func framework(for runtime: Runtime) -> URL? {
         let engine = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
-        let candidates = [runtime.managedRoot?.appendingPathComponent("media/GStreamer.framework"),
-                          engine.appendingPathComponent("support/\(EngineInstaller.sikarugirTemplate).app/Contents/Frameworks/GStreamer.framework"),
-                          engine.appendingPathComponent("lib/GStreamer.framework")]
+        let support = engine.appendingPathComponent("support", isDirectory: true)
+        let templates = (try? FileManager.default.contentsOfDirectory(at: support, includingPropertiesForKeys: nil)) ?? []
+        let templateFrameworks = templates.filter { $0.pathExtension == "app" && $0.lastPathComponent.hasPrefix("Template-") }
+            .map { $0.appendingPathComponent("Contents/Frameworks/GStreamer.framework") }
+        let candidates = [runtime.managedRoot?.appendingPathComponent("media/GStreamer.framework")]
+            + templateFrameworks
+            + [engine.appendingPathComponent("lib/GStreamer.framework")]
         return candidates.compactMap { $0 }.first {
             FileManager.default.fileExists(atPath: $0.appendingPathComponent("Versions/1.0/lib/libgstreamer-1.0.0.dylib").path)
         }
