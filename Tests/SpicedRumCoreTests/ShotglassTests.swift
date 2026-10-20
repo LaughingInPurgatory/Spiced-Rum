@@ -243,24 +243,64 @@ final class ShotglassTests: XCTestCase {
         XCTAssertTrue(migrated.dxmt)
     }
 
+    func testBarrelTemplateVersionsSortByNumericComponents() {
+        func asset(_ id: Int, _ name: String) -> EngineAsset {
+            EngineAsset(id: id, name: name, size: 1, digest: nil,
+                        browser_download_url: URL(string: "https://github.com/Sikarugir-App/Template/releases/download/v1.0/\(name)")!)
+        }
+        let base = asset(1, "Template-1.0.tar.xz")
+        let latest = asset(2, "Template-1.0.24.tar.xz")
+        XCTAssertEqual(EngineInstaller.newestBarrelTemplateAsset(in: [base, latest])?.name, latest.name)
+        XCTAssertEqual(EngineInstaller.newestBarrelTemplateAsset(in: [asset(3, "Template-1.0.9.tar.xz"), asset(4, "Template-1.0.10.tar.xz")])?.name, "Template-1.0.10.tar.xz")
+    }
+
     func testBarrelWineLauncherSetsRuntimeEnvironmentAfterRosettaStarts() throws {
         let root = try fixture().appendingPathComponent("Barrel", isDirectory: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("bin"), withIntermediateDirectories: true)
+        let frameworks = root.appendingPathComponent("support/Template-1.0.24.app/Contents/Frameworks", isDirectory: true)
+        try FileManager.default.createDirectory(at: frameworks, withIntermediateDirectories: true)
+        try Data("KosmicKrisp".utf8).write(to: frameworks.appendingPathComponent("libvulkan_kosmickrisp.dylib"))
         let wine = try EngineInstaller.barrelWineLaunchers(in: root, templateName: "Template-1.0.24")
         let script = try String(contentsOf: wine, encoding: .utf8)
         XCTAssertTrue(script.contains("DYLD_FALLBACK_LIBRARY_PATH=\"$frameworks:$frameworks/GStreamer.framework/Libraries:/usr/lib\""))
+        XCTAssertTrue(script.contains("export VK_DRIVER_FILES=\"$engine_dir/barrel-vulkan-icd.json\""))
         XCTAssertTrue(script.contains("export WINEMSYNC=1"))
         XCTAssertTrue(script.contains("exec \"$engine_dir/bin/wine\" \"$@\""))
 
-        var engine = Runtime(name: "Barrel Wine", executable: wine, useRosetta: true, d3dMetal: false, dxmt: true, version: "Wine")
-        engine.managedRoot = root
-        try Data("{}".utf8).write(to: root.appendingPathComponent("barrel-wine.json"))
-        let entry = try ShotglassFiles.create(Shotglass(name: "Barrel", runtime: engine, graphics: .dxmt), parent: root.appendingPathComponent("shotglasses"))
+        let moved = root.deletingLastPathComponent().appendingPathComponent("relocated Barrel")
+        try FileManager.default.moveItem(at: root, to: moved)
+        try EngineInstaller.writeBarrelVulkanManifest(in: moved, templateName: "Template-1.0.24")
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: moved.appendingPathComponent("barrel-vulkan-icd.json"))) as? [String: Any])
+        let icd = try XCTUnwrap(manifest["ICD"] as? [String: String])
+        XCTAssertEqual(icd["library_path"], moved.appendingPathComponent("support/Template-1.0.24.app/Contents/Frameworks/libvulkan_kosmickrisp.dylib").path)
+
+        let relocatedWine = moved.appendingPathComponent("spiced-rum-barrel-launchers/wine")
+        var engine = Runtime(name: "Barrel Wine", executable: relocatedWine, useRosetta: true, d3dMetal: false, dxmt: true, version: "Wine")
+        engine.managedRoot = moved
+        try Data("{}".utf8).write(to: moved.appendingPathComponent("barrel-wine.json"))
+        let entry = try ShotglassFiles.create(Shotglass(name: "Barrel", runtime: engine, graphics: .dxmt), parent: moved.appendingPathComponent("shotglasses"))
         XCTAssertEqual(Wine.environment(for: entry)["WINEMSYNC"], "1")
+        XCTAssertEqual(Wine.environment(for: entry)["WINEBOOT_HIDE_DIALOG"], "1")
+        XCTAssertEqual(Wine.environment(for: entry)["ROSETTA_ADVERTISE_AVX"], "1")
         let (binary, arguments) = Wine.command(runtime: engine, arguments: ["--version"])
         XCTAssertEqual(binary.path, "/usr/bin/arch")
-        XCTAssertEqual(arguments, ["-x86_64", wine.path, "--version"])
-        XCTAssertTrue(Wine.environment(for: entry)["PATH"]?.contains(root.appendingPathComponent("bin").path) == true)
+        XCTAssertEqual(arguments, ["-x86_64", relocatedWine.path, "--version"])
+        XCTAssertTrue(Wine.environment(for: entry)["PATH"]?.contains(moved.appendingPathComponent("bin").path) == true)
+    }
+
+    func testFailedEngineInstallLogIsPreservedForReview() throws {
+        let root = try fixture()
+        let engines = root.appendingPathComponent("Engines", isDirectory: true)
+        let id = UUID()
+        let engine = engines.appendingPathComponent(id.uuidString, isDirectory: true)
+        let shotglass = engine.appendingPathComponent("validation.spicedrum", isDirectory: true)
+        try FileManager.default.createDirectory(at: shotglass, withIntermediateDirectories: true)
+        try Data("Wine failure details".utf8).write(to: shotglass.appendingPathComponent("session.log"))
+
+        let saved = try XCTUnwrap(EngineInstaller.preserveFailedSetupLog(in: engine, under: engines, id: id))
+        try FileManager.default.removeItem(at: engine)
+        XCTAssertEqual(try String(contentsOf: saved, encoding: .utf8), "Wine failure details")
+        XCTAssertTrue(saved.path.contains("Install Logs"))
     }
 
     func testRejectsLinuxRuntimeBeforeExecution() throws {
@@ -375,6 +415,22 @@ final class ShotglassTests: XCTestCase {
         XCTAssertEqual(runtime.defaultGraphics, .dxvk)
         XCTAssertTrue(FileManager.default.fileExists(atPath: runtime.executable.path))
         try Wine.validateDXVK(runtime.dxvkPackage)
+    }
+
+    func testOptionalBarrelWineDownloadAndSetup() async throws {
+        guard ProcessInfo.processInfo.environment["SPICED_RUM_TEST_BARREL"] == "1" else {
+            throw XCTSkip("Set SPICED_RUM_TEST_BARREL=1 to verify the official Barrel engine, support libraries, Vulkan driver and Windows x64 startup.")
+        }
+        let assets = try await EngineInstaller.releases(.barrelWine).assets
+        let asset = try XCTUnwrap(assets.first(where: \.verifiedDownload))
+        let engines = try fixture()
+        let runtime = try await EngineInstaller.install(asset, feed: .barrelWine, into: engines) { _, _ in }
+        XCTAssertTrue(runtime.dxmt)
+        XCTAssertEqual(runtime.defaultGraphics, .dxmt)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: runtime.executable.path))
+        let manifest = try XCTUnwrap(runtime.managedRoot?.appendingPathComponent("barrel-vulkan-icd.json"))
+        let icd = try XCTUnwrap((JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any])?["ICD"] as? [String: String])
+        XCTAssertTrue(icd["library_path"]?.hasSuffix("libvulkan_kosmickrisp.dylib") == true)
     }
 
     func testSikarugirLibrariesStayPortableAndPreserveEngineFiles() async throws {

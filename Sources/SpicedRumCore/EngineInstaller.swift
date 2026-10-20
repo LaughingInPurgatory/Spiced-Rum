@@ -417,6 +417,14 @@ public enum EngineInstaller {
     static let sikarugirTemplate = "Template-1.0.24"
     static let sikarugirTemplateDigest = "sha256:4b5f89eeb9ef139936bdfad33d9b420b05ea4597cb7d63376674f7a8e171321c"
 
+    static func newestBarrelTemplateAsset(in assets: [EngineAsset]) -> EngineAsset? {
+        func version(_ asset: EngineAsset) -> [Int] {
+            String(asset.name.dropFirst("Template-".count).dropLast(".tar.xz".count))
+                .split(separator: ".").compactMap { Int($0) }
+        }
+        return assets.max { version($0).lexicographicallyPrecedes(version($1)) }
+    }
+
     static func latestBarrelTemplateAsset() async throws -> EngineAsset {
         let url = URL(string: "https://api.github.com/repos/Sikarugir-App/Template/releases/tags/v1.0")!
         var request = URLRequest(url: url)
@@ -433,7 +441,7 @@ public enum EngineInstaller {
                 && asset.name.range(of: #"^Template-[0-9]+(?:\.[0-9]+)+\.tar\.xz$"#, options: .regularExpression) != nil
                 && asset.verifiedDownload
         }
-        guard let asset = candidates.sorted(by: { $0.name.compare($1.name, options: .numeric) == .orderedDescending }).first else {
+        guard let asset = newestBarrelTemplateAsset(in: candidates) else {
             throw RumError.message("The Template publisher has no versioned support archive with a SHA-256 digest. Barrel Wine was not installed.")
         }
         var selected = asset
@@ -473,6 +481,9 @@ public enum EngineInstaller {
             guard FileManager.default.fileExists(atPath: bundle.appendingPathComponent("Contents/Frameworks/libinotify.0.dylib").path) else {
                 throw RumError.message("The support archive does not contain the macOS Wine libraries Barrel needs.")
             }
+            guard FileManager.default.isReadableFile(atPath: bundle.appendingPathComponent("Contents/Frameworks/libvulkan_kosmickrisp.dylib").path) else {
+                throw RumError.message("Barrel Wine's support package is missing its KosmicKrisp Vulkan driver.")
+            }
             try linkTemplateLibraries(template: bundle, engine: engine)
             struct BarrelReceipt: Encodable { let engine: String; let support: EngineAsset; let supportSHA256: String }
             let receipt = try JSONEncoder().encode(BarrelReceipt(engine: "Barrel Wine", support: template, supportSHA256: digest))
@@ -494,6 +505,7 @@ public enum EngineInstaller {
             frameworks="$engine_dir/support/\(templateName).app/Contents/Frameworks"
             export DYLD_FALLBACK_LIBRARY_PATH="$frameworks:$frameworks/GStreamer.framework/Libraries:/usr/lib"
             export GST_PLUGIN_PATH="$frameworks/GStreamer.framework/Libraries/gstreamer-1.0"
+            export VK_DRIVER_FILES="$engine_dir/barrel-vulkan-icd.json"
             export WINEMSYNC=1
             exec "$engine_dir/bin/\(binary)" "$@"
 
@@ -503,6 +515,42 @@ public enum EngineInstaller {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
         }
         return folder.appendingPathComponent("wine")
+    }
+
+    static func writeBarrelVulkanManifest(in engine: URL, templateName: String) throws {
+        let driver = engine.appendingPathComponent("support/\(templateName).app/Contents/Frameworks/libvulkan_kosmickrisp.dylib")
+        guard FileManager.default.isReadableFile(atPath: driver.path) else {
+            throw RumError.message("Barrel Wine's KosmicKrisp Vulkan driver is missing. Reinstall the engine and its support libraries.")
+        }
+        let manifest: [String: Any] = [
+            "file_format_version": "1.0.1",
+            "ICD": [
+                "library_path": driver.path,
+                "api_version": "1.3.0"
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+        try data.write(to: engine.appendingPathComponent("barrel-vulkan-icd.json"), options: .atomic)
+    }
+
+    static func preserveFailedSetupLog(in engine: URL, under engines: URL, id: UUID) -> URL? {
+        let fm = FileManager.default
+        guard let folders = try? fm.contentsOfDirectory(at: engine, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              let shotglass = folders.first(where: { folder in
+                  guard folder.pathExtension == "spicedrum",
+                        let values = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return false }
+                  return values.isDirectory == true && values.isSymbolicLink != true
+              }) else { return nil }
+        let log = shotglass.appendingPathComponent("session.log")
+        guard let values = try? log.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true else { return nil }
+        let folder = engines.appendingPathComponent("Install Logs", isDirectory: true)
+        let saved = folder.appendingPathComponent("\(id.uuidString)-session.log")
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            try fm.copyItem(at: log, to: saved)
+            return saved
+        } catch { return nil }
     }
 
     static func validateStandaloneSikarugir(_ wine: URL) throws {
@@ -770,6 +818,13 @@ public enum EngineInstaller {
             catch { throw RumError.message("Cannot place the extracted engine in its installation folder.\n\(error.localizedDescription)") }
             runtime.executable = destination.appendingPathComponent(relative)
             runtime.managedRoot = destination
+            if feed == .barrelWine {
+                let templateName = (try? FileManager.default.contentsOfDirectory(at: destination.appendingPathComponent("support"), includingPropertiesForKeys: nil))?
+                    .first(where: { $0.pathExtension == "app" && $0.lastPathComponent.hasPrefix("Template-") })?
+                    .deletingPathExtension().lastPathComponent
+                guard let templateName else { throw RumError.message("Barrel Wine's support libraries are missing from the installed engine.") }
+                try writeBarrelVulkanManifest(in: destination, templateName: templateName)
+            }
             if let evaluation {
                 update("Attaching Apple's GPTK \(evaluation.version) payload to the Wine engine…", nil)
                 runtime = try await GPTKInstaller.attachPayload(evaluation, to: runtime, into: destination)
@@ -793,7 +848,14 @@ public enum EngineInstaller {
             struct Receipt: Encodable { let asset: EngineAsset; let sha256: String; let publisherChecksumVerified: Bool }
             let receipt = try JSONEncoder().encode(Receipt(asset: asset, sha256: calculatedDigest, publisherChecksumVerified: asset.verifiedDownload))
             try receipt.write(to: destination.appendingPathComponent("download-receipt.json"), options: .atomic)
-        } catch { try? fm.removeItem(at: destination); throw error }
+        } catch {
+            let setupLog = preserveFailedSetupLog(in: destination, under: engines, id: runtime.id)
+            try? fm.removeItem(at: destination)
+            if let setupLog {
+                throw RumError.message("\(error.localizedDescription)\nFull setup log was preserved at \(setupLog.path)")
+            }
+            throw error
+        }
         update("Engine installed", 1)
         return runtime
     }

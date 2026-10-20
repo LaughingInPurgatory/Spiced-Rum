@@ -24,7 +24,11 @@ public enum Wine {
         let wineBin = ["spiced-rum-launchers", "spiced-rum-barrel-launchers"].contains(launcher) ? engine.appendingPathComponent("bin").path : runtime.executable.deletingLastPathComponent().path
         env["PATH"] = runtime.executable.deletingLastPathComponent().path + ":" + wineBin + ":/usr/bin:/bin:/usr/sbin:/sbin"
         env["WINEDEBUG"] = "-all,err+all"
-        if FileManager.default.fileExists(atPath: engine.appendingPathComponent("barrel-wine.json").path) { env["WINEMSYNC"] = "1" }
+        if FileManager.default.fileExists(atPath: engine.appendingPathComponent("barrel-wine.json").path) {
+            env["WINEMSYNC"] = "1"
+            env["WINEBOOT_HIDE_DIALOG"] = "1"
+            env["ROSETTA_ADVERTISE_AVX"] = "1"
+        }
         if let framework = MediaSupport.framework(for: entry.shotglass.runtime) {
             env.merge(MediaSupport.environment(framework: framework, registry: entry.folder.appendingPathComponent("gstreamer-registry-x86_64-v1.bin"))) { _, new in new }
         }
