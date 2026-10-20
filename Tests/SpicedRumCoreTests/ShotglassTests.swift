@@ -41,6 +41,58 @@ final class ShotglassTests: XCTestCase {
         XCTAssertThrowsError(try ShotglassFiles.validateForRemoval(ShotglassEntry(shotglass: entry.shotglass, folder: link)))
     }
 
+    func testShotglassRenamePreservesIdentityAndFolder() throws {
+        let root = try fixture()
+        let entry = try ShotglassFiles.create(Shotglass(name: "Before", runtime: runtime(), graphics: .wine), parent: root)
+
+        let renamed = try ShotglassFiles.rename(entry, to: "  After  ")
+
+        XCTAssertEqual(renamed.id, entry.id)
+        XCTAssertEqual(renamed.folder, entry.folder)
+        XCTAssertEqual(renamed.shotglass.name, "After")
+        XCTAssertEqual(try Shotglass.load(from: entry.folder).name, "After")
+        XCTAssertThrowsError(try ShotglassFiles.rename(renamed, to: " \n "))
+    }
+
+    func testShotglassDuplicateCopiesEnvironmentAndShortcutsButNotBackupsOrLogs() throws {
+        let root = try fixture()
+        let entry = try ShotglassFiles.create(Shotglass(name: "Original", runtime: runtime(), graphics: .wine), parent: root)
+        let executable = entry.prefix.appendingPathComponent("drive_c/Program Files/Game/Game.exe")
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("game".utf8).write(to: executable)
+        let dosdevices = entry.prefix.appendingPathComponent("dosdevices", isDirectory: true)
+        try FileManager.default.createDirectory(at: dosdevices, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: dosdevices.appendingPathComponent("c:").path, withDestinationPath: "../drive_c")
+        try Data("registry".utf8).write(to: entry.prefix.appendingPathComponent("system.reg"))
+        try Data("old log".utf8).write(to: entry.log)
+        let backupFile = entry.folder.appendingPathComponent("engine-backups/backup/large-file")
+        try FileManager.default.createDirectory(at: backupFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("backup".utf8).write(to: backupFile)
+        var source = entry.shotglass
+        source.initialized = true
+        source.programs = [Program(name: "Game", path: ShotglassFiles.programPath(executable, in: entry))]
+        try source.save(in: entry.folder)
+        let currentEntry = ShotglassEntry(shotglass: source, folder: entry.folder)
+
+        let duplicate = try ShotglassFiles.duplicate(currentEntry, name: "Game Copy")
+
+        XCTAssertNotEqual(duplicate.id, currentEntry.id)
+        XCTAssertEqual(duplicate.shotglass.name, "Game Copy")
+        XCTAssertEqual(duplicate.shotglass.runtime, currentEntry.shotglass.runtime)
+        XCTAssertTrue(duplicate.shotglass.initialized)
+        XCTAssertNotEqual(duplicate.shotglass.programs.first?.id, currentEntry.shotglass.programs.first?.id)
+        XCTAssertEqual(try Shotglass.load(from: duplicate.folder).id, duplicate.id)
+        XCTAssertEqual(try Data(contentsOf: duplicate.prefix.appendingPathComponent("system.reg")), Data("registry".utf8))
+        XCTAssertEqual(try Data(contentsOf: ShotglassFiles.programURL(try XCTUnwrap(duplicate.shotglass.programs.first), in: duplicate)), Data("game".utf8))
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: duplicate.prefix.appendingPathComponent("dosdevices/c:").path), "../drive_c")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: duplicate.log.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: duplicate.folder.appendingPathComponent("engine-backups").path))
+        XCTAssertEqual(try Shotglass.load(from: currentEntry.folder).id, currentEntry.id)
+
+        try Data("pending".utf8).write(to: currentEntry.folder.appendingPathComponent("engine-change.json"))
+        XCTAssertThrowsError(try ShotglassFiles.duplicate(currentEntry, name: "Pending Copy"))
+    }
+
     func testGPTKPayloadVersionPersistsInRuntimeMetadata() throws {
         let root = try fixture()
         let entry = try ShotglassFiles.create(Shotglass(name: "GPTK", runtime: runtime(), graphics: .wine), parent: root)

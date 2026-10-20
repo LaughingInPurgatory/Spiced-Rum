@@ -103,7 +103,7 @@ Some dependency tools need Homebrew, the macOS package manager. Spiced-Rum can s
 
 ## Installing the downloaded app
 
-Download the latest `.zip` from [Releases](https://github.com/LaughingInPurgatory/Spiced-Rum/releases/latest), expand it and move **Spiced-Rum.app** to Applications. The app is ad-hoc signed, not signed with an Apple Developer ID or notarized. macOS may ask you to approve it the first time: try opening it, then choose **Open Anyway** in **System Settings → Privacy & Security** if you trust the download. See [Apple's instructions](https://support.apple.com/en-gb/guide/mac-help/mh40617/27/mac/27).
+Download the latest `.zip` from [Releases](https://github.com/LaughingInPurgatory/Spiced-Rum/releases/latest), expand it and move **Spiced-Rum.app** to Applications. Releases use the maintainer's self-signed code-signing certificate; they are not signed with an Apple Developer ID or notarized. The signature helps macOS identify the same signing key and detect changes, but another Mac does not automatically trust that certificate. When you first open a downloaded copy, macOS may ask you to approve it in **System Settings → Privacy & Security**. See [Apple's instructions](https://support.apple.com/en-gb/guide/mac-help/mh40617/27/mac/27).
 
 ## Engines included
 
@@ -132,4 +132,4 @@ bash scripts/build-app.sh
 open dist/Spiced-Rum.app
 ```
 
-The app supports macOS 14 and later. The test suite covers library behavior and setup logic. Real Wine, game rendering and publisher-download checks are optional integration tests and require the relevant runtimes or downloads.
+The build is ad-hoc signed by default. If you have a code-signing identity in your login keychain, set `SPICED_RUM_SIGNING_IDENTITY` to its name to use it instead. The app supports macOS 14 and later. The test suite covers library behavior and setup logic. Real Wine, game rendering and publisher-download checks are optional integration tests and require the relevant runtimes or downloads.

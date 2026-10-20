@@ -186,6 +186,51 @@ public enum ShotglassFiles {
         }
     }
 
+    public static func rename(_ entry: ShotglassEntry, to name: String) throws -> ShotglassEntry {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw RumError.message("Give your shotglass a name.") }
+        try validateForRemoval(entry)
+        var renamed = entry
+        renamed.shotglass.name = name
+        try renamed.shotglass.save(in: renamed.folder)
+        return renamed
+    }
+
+    public static func duplicate(_ entry: ShotglassEntry, name: String) throws -> ShotglassEntry {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw RumError.message("Give your shotglass a name.") }
+        try validateForRemoval(entry)
+        guard !entry.engineChangePending else {
+            throw RumError.message("Restore the unfinished engine change before duplicating this shotglass.")
+        }
+
+        let identifier = UUID()
+        let parent = entry.folder.deletingLastPathComponent()
+        let folder = parent.appendingPathComponent(identifier.uuidString + ".spicedrum", isDirectory: true)
+        let staging = parent.appendingPathComponent(".\(identifier.uuidString).duplicating", isDirectory: true)
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: staging, withIntermediateDirectories: false)
+        do {
+            let excludedItems: Set<String> = ["engine-backups", "engine-change.json", "session.log"]
+            for item in try fileManager.contentsOfDirectory(at: entry.folder, includingPropertiesForKeys: nil) {
+                guard !excludedItems.contains(item.lastPathComponent) else { continue }
+                try fileManager.copyItem(at: item, to: staging.appendingPathComponent(item.lastPathComponent))
+            }
+
+            var duplicate = entry.shotglass
+            duplicate.id = identifier
+            duplicate.name = name
+            duplicate.created = Date()
+            for index in duplicate.programs.indices { duplicate.programs[index].id = UUID() }
+            try duplicate.save(in: staging)
+            try fileManager.moveItem(at: staging, to: folder)
+            return ShotglassEntry(shotglass: duplicate, folder: folder)
+        } catch {
+            try? fileManager.removeItem(at: staging)
+            throw error
+        }
+    }
+
     public static func programPath(_ executable: URL, in entry: ShotglassEntry) -> String {
         let root = entry.folder.standardizedFileURL.path + "/"
         let path = executable.standardizedFileURL.path

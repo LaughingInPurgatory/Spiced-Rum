@@ -4,6 +4,19 @@ import SpicedRumCore
 
 private let amber = Color(red: 0.94, green: 0.64, blue: 0.29)
 
+private enum ShotglassEditMode: String, Identifiable {
+    case rename, duplicate
+    var id: String { rawValue }
+    var title: String { self == .rename ? "Rename Shotglass" : "Duplicate Shotglass" }
+    var action: String { self == .rename ? "Rename" : "Duplicate" }
+}
+
+private struct ShotglassEditRequest: Identifiable {
+    let entry: ShotglassEntry
+    let mode: ShotglassEditMode
+    var id: String { "\(entry.id.uuidString)-\(mode.id)" }
+}
+
 struct PrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
@@ -14,12 +27,56 @@ struct PrimaryButtonStyle: ButtonStyle {
     }
 }
 
+private struct ShotglassNameView: View {
+    @EnvironmentObject private var store: LibraryStore
+    @Environment(\.dismiss) private var dismiss
+    let entry: ShotglassEntry
+    let mode: ShotglassEditMode
+    @State private var name: String
+
+    init(entry: ShotglassEntry, mode: ShotglassEditMode) {
+        self.entry = entry
+        self.mode = mode
+        _name = State(initialValue: mode == .rename ? entry.shotglass.name : "\(entry.shotglass.name) Copy")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(mode.title).font(.title2.weight(.semibold))
+            TextField("Shotglass name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(save)
+            if mode == .duplicate {
+                Text("Copies the Windows environment, installed apps and games, settings, and shortcuts. Wine environment backups are not copied. This may need as much free space as the original shotglass.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(mode.action, action: save)
+                    .buttonStyle(PrimaryButtonStyle())
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy.contains(entry.id))
+            }
+        }
+        .padding(26)
+        .frame(width: 440)
+    }
+
+    private func save() {
+        if mode == .rename { store.renameShotglass(entry, to: name) }
+        else { store.duplicateShotglass(entry, name: name) }
+        dismiss()
+    }
+}
+
 struct LibraryView: View {
     @EnvironmentObject var store: LibraryStore
     @State private var section = "shotglasses"
     @State private var newShotglass = false
     @State private var search = ""
     @State private var shotglassToTrash: ShotglassEntry?
+    @State private var editingShotglass: ShotglassEditRequest?
 
     var body: some View {
         NavigationSplitView {
@@ -65,6 +122,12 @@ struct LibraryView: View {
                                 .accessibilityLabel("Move \(entry.shotglass.name) to Trash")
                                 .disabled(store.busy.contains(entry.id))
                             }
+                            .contextMenu {
+                                Button("Rename…", systemImage: "pencil") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .rename) }
+                                    .disabled(store.busy.contains(entry.id))
+                                Button("Duplicate…", systemImage: "plus.square.on.square") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .duplicate) }
+                                    .disabled(store.busy.contains(entry.id))
+                            }
                         }
                     }.padding(.horizontal, 10)
                 }
@@ -73,7 +136,7 @@ struct LibraryView: View {
                     Label("Made for Apple Silicon", systemImage: "apple.logo").font(.caption)
                     Text("Developed by Laughing In Purgatory").font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("VERSION  0.1.4").font(.system(size: 9, weight: .medium)).tracking(1).foregroundStyle(.tertiary)
+                    Text("VERSION  0.1.5").font(.system(size: 9, weight: .medium)).tracking(1).foregroundStyle(.tertiary)
                 }.padding(10)
             }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(red: 0.075, green: 0.079, blue: 0.087))
             .navigationSplitViewColumnWidth(240)
@@ -84,6 +147,7 @@ struct LibraryView: View {
             }.background(Color(red: 0.105, green: 0.109, blue: 0.12))
         }
         .sheet(isPresented: $newShotglass) { NewShotglassView() }
+        .sheet(item: $editingShotglass) { request in ShotglassNameView(entry: request.entry, mode: request.mode) }
         .alert("Spiced-Rum", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("OK") { store.error = nil }
         } message: { Text(store.error ?? "") }
@@ -205,6 +269,11 @@ struct LibraryView: View {
             .accessibilityLabel("Move \(entry.shotglass.name) to Trash")
             .disabled(store.busy.contains(entry.id))
             .offset(x: -9, y: 49)
+        }.contextMenu {
+            Button("Rename…", systemImage: "pencil") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .rename) }
+                .disabled(store.busy.contains(entry.id))
+            Button("Duplicate…", systemImage: "plus.square.on.square") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .duplicate) }
+                .disabled(store.busy.contains(entry.id))
         }
     }
 }
@@ -216,6 +285,7 @@ struct ShotglassDetail: View {
     @State private var showEngineChange = false
     @State private var showForceStopConfirmation = false
     @State private var showRemoveConfirmation = false
+    @State private var editingShotglass: ShotglassEditRequest?
     @State private var steamFixProgram: Program?
     @State private var enableSteamFix: Bool?
     @State private var heroicRepairProgram: Program?
@@ -237,6 +307,11 @@ struct ShotglassDetail: View {
                 }.disabled(!entry.shotglass.initialized || store.stopping.contains(entry.id))
                 Button("Change engine…", systemImage: "cpu") { showEngineChange = true }.disabled(store.busy.contains(entry.id))
                 Menu {
+                    Button("Rename…", systemImage: "pencil") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .rename) }
+                        .disabled(store.busy.contains(entry.id))
+                    Button("Duplicate…", systemImage: "plus.square.on.square") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .duplicate) }
+                        .disabled(store.busy.contains(entry.id))
+                    Divider()
                     Button(role: .destructive) { showRemoveConfirmation = true } label: {
                         Label("Move Shotglass to Trash…", systemImage: "trash")
                     }.disabled(store.busy.contains(entry.id))
@@ -344,6 +419,7 @@ struct ShotglassDetail: View {
         }
         .sheet(isPresented: $showDependencies) { DependencyView(entry: entry) }
         .sheet(isPresented: $showEngineChange) { ChangeEngineView(entry: entry) }
+        .sheet(item: $editingShotglass) { request in ShotglassNameView(entry: request.entry, mode: request.mode) }
         .confirmationDialog("Force Stop \(entry.shotglass.name)?", isPresented: $showForceStopConfirmation, titleVisibility: .visible) {
             Button("Force Stop All Windows Apps", role: .destructive) { store.forceStop(entry) }
             Button("Cancel", role: .cancel) { }

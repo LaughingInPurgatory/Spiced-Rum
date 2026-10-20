@@ -531,6 +531,59 @@ final class LibraryStore: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
+    func renameShotglass(_ entry: ShotglassEntry, to name: String) {
+        guard storageAvailable else { error = "Library storage is unavailable. Repair library.json and restart Spiced-Rum."; return }
+        guard !busy.contains(entry.id) else { error = "Wait for this shotglass operation to finish before renaming it."; return }
+        guard catalog.shotglassFolders.contains(where: { $0.standardizedFileURL == entry.folder.standardizedFileURL }) else {
+            error = "This shotglass is no longer registered. Refresh the library and try again."; return
+        }
+        do { replaceEntry(try ShotglassFiles.rename(entry, to: name)) }
+        catch { self.error = error.localizedDescription }
+    }
+
+    func duplicateShotglass(_ entry: ShotglassEntry, name: String) {
+        guard storageAvailable else { error = "Library storage is unavailable. Repair library.json and restart Spiced-Rum."; return }
+        guard !busy.contains(entry.id) else { error = "Wait for this shotglass operation to finish before duplicating it."; return }
+        guard catalog.shotglassFolders.contains(where: { $0.standardizedFileURL == entry.folder.standardizedFileURL }) else {
+            error = "This shotglass is no longer registered. Refresh the library and try again."; return
+        }
+        do { try ShotglassFiles.validateForRemoval(entry) }
+        catch { self.error = error.localizedDescription; return }
+        guard !entry.engineChangePending else {
+            error = "Restore the unfinished engine change before duplicating this shotglass."; return
+        }
+
+        busy.insert(entry.id)
+        messages[entry.id] = "Stopping Windows processes and copying the shotglass…"
+        Task {
+            defer { busy.remove(entry.id) }
+            do {
+                if entry.shotglass.initialized { try await Wine.stopServer(entry) }
+                let duplicate = try await Task.detached(priority: .utility) {
+                    try ShotglassFiles.duplicate(entry, name: name)
+                }.value
+                var updated = catalog
+                updated.shotglassFolders.append(duplicate.folder)
+                do { try persist(updated) }
+                catch {
+                    do { try FileManager.default.removeItem(at: duplicate.folder) }
+                    catch {
+                        throw RumError.message("The duplicate could not be added to the library, and its copied files could not be removed. They remain at \(duplicate.folder.path).\n\(error.localizedDescription)")
+                    }
+                    throw error
+                }
+                entries.insert(duplicate, at: 0)
+                selection = duplicate.id
+                messages[duplicate.id] = duplicate.shotglass.initialized
+                    ? "Copied from \(entry.shotglass.name). Ready to launch."
+                    : "Copied from \(entry.shotglass.name). Finish setup before launching."
+            } catch {
+                messages[entry.id] = "Duplication needs attention"
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
     func removeShotglass(_ entry: ShotglassEntry) {
         guard !busy.contains(entry.id) else { error = "Wait for this shotglass operation to finish before moving it to Trash."; return }
         guard catalog.shotglassFolders.contains(where: { $0.standardizedFileURL == entry.folder.standardizedFileURL }) else {
