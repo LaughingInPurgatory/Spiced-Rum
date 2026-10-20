@@ -45,7 +45,7 @@ A shotglass is a separate Windows environment for a game or app. Its folder cont
 
 ### 3. Install a game or app
 
-Select the shotglass card. Choose **Run installer or executable…** and open a Windows `.exe` or `.msi` installer. When installation finishes, choose **Add application…** and select the installed program's `.exe`. A shortcut appears in the shotglass; use **Launch** to open it later.
+Select a shotglass in the sidebar. Choose **Run installer or executable…** and open a Windows `.exe` or `.msi` installer. When installation finishes, choose **Add application…** and select the installed program's `.exe`. A shortcut appears in the shotglass; use **Launch** to open it later.
 
 For Steam or Heroic, install the Windows version in a shotglass just like another app, then add its executable as a shortcut. Spiced-Rum has a direct extraction option for Heroic's Windows setup file because its installer can incorrectly report that Heroic is already running.
 
@@ -53,18 +53,21 @@ For Steam or Heroic, install the Windows version in a shotglass just like anothe
 
 ### Your shotglasses
 
-This is your game and app library. The search field filters the cards by name, and the **Collection** list in the sidebar is another way to jump between them. Select a card to see its shortcuts and controls.
+When Spiced-Rum opens, a short animation shows rum pouring into a shotglass. Choose **Skip intro** to go straight to the app. The animation is skipped automatically when macOS Reduce Motion is enabled.
+
+The **Shotglasses** section in the sidebar lists your game and app environments. Select a shotglass to see its engine, graphics setting, shortcuts and controls in the main area. The plus, refresh and import buttons above the list manage your library; hover over each button to see its label.
 
 - A **green light** means the shotglass finished its initial setup. An **amber light** means it still needs setup or a retry.
+- The small trash button beside a shotglass moves it to macOS Trash. Rename and duplicate actions are available from the shotglass row's context menu.
 - **Launch** opens a saved Windows shortcut. **Run installer or executable…** opens another Windows program once.
 - **Add application…** saves an installed `.exe` as a shortcut.
-- The card menu can **Rename…** or **Duplicate…** a shotglass. A duplicate copies its Windows environment, installed games and apps, settings, and shortcuts, but leaves backups behind. Allow roughly the same free space as the original.
+- **Duplicate…** copies its Windows environment, installed games and apps, settings, and shortcuts, but leaves backups behind. Allow roughly the same free space as the original.
 - **Install components…** adds Windows fonts, DLLs and settings commonly requested by games.
 - **Graphics** changes the renderer for that shotglass when its engine supports another option.
 - **Change engine…** switches the shotglass to another installed engine and keeps a Wine-environment backup so you can recover.
 - **Show files** opens the shotglass folder. **Logs** opens its Wine output to help diagnose setup or launch problems.
 - **Force Stop** stops all Wine processes in that shotglass. Unsaved progress may be lost; other shotglasses are unaffected.
-- The trash button on a card or in the sidebar moves the complete shotglass folder to macOS Trash, including installed games and backups. The shared engine remains installed.
+- The trash button moves the complete shotglass folder to macOS Trash, including installed games and backups. The shared engine remains installed.
 
 ### Runtimes & setup
 

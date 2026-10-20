@@ -4,6 +4,44 @@ import SpicedRumCore
 
 private let amber = Color(red: 0.94, green: 0.64, blue: 0.29)
 
+private struct SidebarActionButton: View {
+    let title: String
+    let symbol: String
+    var disabled = false
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(title)
+        .accessibilityLabel(title)
+        .onHover { hovering = $0 }
+        .overlay(alignment: .topTrailing) {
+            if hovering {
+                Text(title)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.white.opacity(0.12)))
+                    .offset(y: -30)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .zIndex(hovering ? 1 : 0)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
 private enum ShotglassEditMode: String, Identifiable {
     case rename, duplicate
     var id: String { rawValue }
@@ -72,11 +110,12 @@ private struct ShotglassNameView: View {
 
 struct LibraryView: View {
     @EnvironmentObject var store: LibraryStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var section = "shotglasses"
     @State private var newShotglass = false
-    @State private var search = ""
     @State private var shotglassToTrash: ShotglassEntry?
     @State private var editingShotglass: ShotglassEditRequest?
+    @State private var showStartupIntro = true
 
     var body: some View {
         NavigationSplitView {
@@ -92,59 +131,91 @@ struct LibraryView: View {
                     nav("Your shotglasses", icon: "square.grid.2x2", value: "shotglasses", count: store.entries.count)
                     nav("Runtimes & setup", icon: "cpu", value: "runtimes")
                 }
-                if section == "shotglasses" && !store.entries.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("COLLECTION").font(.system(size: 10, weight: .semibold)).tracking(1.5).foregroundStyle(.secondary)
-                        ForEach(store.entries) { entry in
-                            HStack(spacing: 4) {
-                                Button { store.selection = entry.id } label: {
-                                    HStack(spacing: 8) {
-                                        ShotglassMark().frame(width: 17, height: 17).opacity(store.selection == entry.id ? 1 : 0.68)
-                                        Text(entry.shotglass.name).lineLimit(1)
-                                        Spacer(minLength: 2)
-                                        if store.busy.contains(entry.id) { ProgressView().controlSize(.mini) }
-                                    }
-                                    .contentShape(Rectangle())
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 5)
-                                }
-                                .buttonStyle(.plain)
-
-                                Button { shotglassToTrash = entry } label: {
-                                    Image(systemName: "trash")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 20, height: 20)
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .help("Move \(entry.shotglass.name) to Trash")
-                                .accessibilityLabel("Move \(entry.shotglass.name) to Trash")
-                                .disabled(store.busy.contains(entry.id))
-                            }
-                            .contextMenu {
-                                Button("Rename…", systemImage: "pencil") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .rename) }
-                                    .disabled(store.busy.contains(entry.id))
-                                Button("Duplicate…", systemImage: "plus.square.on.square") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .duplicate) }
-                                    .disabled(store.busy.contains(entry.id))
-                            }
+                if section == "shotglasses" {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Text("SHOTGLASSES").font(.system(size: 10, weight: .semibold)).tracking(1.5).foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            SidebarActionButton(title: "Add a new shotglass", symbol: "plus", disabled: !store.storageAvailable) { newShotglass = true }
+                            SidebarActionButton(title: "Refresh the shotglass list", symbol: "arrow.clockwise") { store.reload() }
+                            SidebarActionButton(title: "Import an existing shotglass folder", symbol: "square.and.arrow.down") { store.importShotglass() }
                         }
+                        .buttonStyle(.plain)
+
+                        ScrollView {
+                            LazyVStack(spacing: 3) {
+                                ForEach(store.entries) { entry in
+                                    HStack(spacing: 7) {
+                                        Button { store.selection = entry.id } label: {
+                                            HStack(spacing: 8) {
+                                                ShotglassMark().frame(width: 17, height: 17)
+                                                    .opacity(store.selection == entry.id ? 1 : 0.68)
+                                                Text(entry.shotglass.name).lineLimit(1)
+                                                Spacer(minLength: 0)
+                                                if store.busy.contains(entry.id) { ProgressView().controlSize(.mini) }
+                                            }
+                                            .contentShape(Rectangle())
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                        .buttonStyle(.plain)
+
+                                        Circle()
+                                            .fill(entry.shotglass.initialized ? .green.opacity(0.8) : amber)
+                                            .frame(width: 8, height: 8)
+                                            .help(entry.shotglass.initialized ? "Ready" : "Setup needed")
+                                            .accessibilityLabel(entry.shotglass.initialized ? "Ready" : "Setup needed")
+
+                                        Button { shotglassToTrash = entry } label: {
+                                            Image(systemName: "trash")
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundStyle(.secondary)
+                                                .frame(width: 20, height: 22)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help("Move \(entry.shotglass.name) to Trash")
+                                        .accessibilityLabel("Move \(entry.shotglass.name) to Trash")
+                                        .disabled(store.busy.contains(entry.id))
+                                    }
+                                    .padding(.horizontal, 8).padding(.vertical, 6)
+                                    .background(store.selection == entry.id ? amber.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                                    .contextMenu {
+                                        Button("Rename…", systemImage: "pencil") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .rename) }
+                                            .disabled(store.busy.contains(entry.id))
+                                        Button("Duplicate…", systemImage: "plus.square.on.square") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .duplicate) }
+                                            .disabled(store.busy.contains(entry.id))
+                                    }
+                                }
+                                if store.entries.isEmpty {
+                                    Text("No shotglasses yet").font(.caption).foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.vertical, 6)
+                                }
+                            }
+                        }.frame(maxHeight: .infinity)
                     }.padding(.horizontal, 10)
                 }
                 Spacer()
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Made for Apple Silicon", systemImage: "apple.logo").font(.caption)
-                    Text("Developed by Laughing In Purgatory").font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("VERSION  0.1.5").font(.system(size: 9, weight: .medium)).tracking(1).foregroundStyle(.tertiary)
-                }.padding(10)
             }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(red: 0.075, green: 0.079, blue: 0.087))
-            .navigationSplitViewColumnWidth(240)
+            .navigationSplitViewColumnWidth(270)
         } detail: {
-            Group {
-                if section == "runtimes" { SetupView() }
-                else { shotglasses }
-            }.background(Color(red: 0.105, green: 0.109, blue: 0.12))
+            ZStack {
+                Group {
+                    if section == "runtimes" { SetupView() }
+                    else if let entry = store.entries.first(where: { $0.id == store.selection }) {
+                        ScrollView { ShotglassDetail(entry: entry).padding(34) }
+                    } else {
+                        shotglassSelectionEmptyState
+                    }
+                }.background(Color(red: 0.105, green: 0.109, blue: 0.12))
+
+                if showStartupIntro && !reduceMotion {
+                    RumPouringIntroView {
+                        withAnimation(.easeInOut(duration: 0.55)) { showStartupIntro = false }
+                    }
+                    .transition(.opacity)
+                    .zIndex(2)
+                }
+            }
         }
         .sheet(isPresented: $newShotglass) { NewShotglassView() }
         .sheet(item: $editingShotglass) { request in ShotglassNameView(entry: request.entry, mode: request.mode) }
@@ -176,105 +247,19 @@ struct LibraryView: View {
         }.buttonStyle(.plain)
     }
 
-    var shotglasses: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Your shotglasses").font(.system(size: 32, weight: .semibold, design: .rounded))
-                        Text("A home for your Windows games and apps.").foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Menu {
-                        Button("Import shotglass folder…") { store.importShotglass() }
-                        Button("Refresh library") { store.reload() }
-                    } label: { Image(systemName: "ellipsis").padding(5) }.menuStyle(.borderlessButton).fixedSize()
-                    Button { newShotglass = true } label: { Label("New shotglass", systemImage: "plus") }
-                        .buttonStyle(PrimaryButtonStyle()).disabled(!store.storageAvailable)
-                }
-                if store.entries.isEmpty { emptyState }
-                else {
-                    TextField("Find a shotglass", text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 300)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), alignment: .top)], spacing: 16) {
-                        ForEach(store.entries.filter { search.isEmpty || $0.shotglass.name.localizedCaseInsensitiveContains(search) }) { entry in
-                            shotglassCard(entry)
-                        }
-                    }
-                    if let entry = store.entries.first(where: { $0.id == store.selection }) { ShotglassDetail(entry: entry) }
-                }
-            }.padding(34)
-        }
-    }
-
-    var emptyState: some View {
-        VStack(spacing: 20) {
-            ZStack {
-                Circle().fill(amber.opacity(0.07)).frame(width: 150, height: 150)
-                Circle().stroke(amber.opacity(0.16), lineWidth: 1).frame(width: 118, height: 118)
-                ShotglassMark().frame(width: 58, height: 58)
+    var shotglassSelectionEmptyState: some View {
+        VStack(spacing: 12) {
+            ShotglassMark().frame(width: 44, height: 44).opacity(0.7)
+            Text(store.entries.isEmpty ? "No shotglasses yet" : "Select a shotglass")
+                .font(.title2.weight(.semibold))
+            Text(store.entries.isEmpty ? "Create one from the Shotglasses panel." : "Choose a shotglass in the side panel to view its details and controls.")
+                .foregroundStyle(.secondary)
+            if store.entries.isEmpty {
+                Button("New shotglass") { newShotglass = true }
+                    .buttonStyle(PrimaryButtonStyle()).disabled(!store.storageAvailable)
             }
-            Text("Good games deserve a good shotglass.").font(.system(size: 23, weight: .medium, design: .rounded))
-            Text("Create a separate Windows environment for a game, Steam,\nor an app. Keep each one's settings and files together.")
-                .multilineTextAlignment(.center).foregroundStyle(.secondary).lineSpacing(5)
-            Button("Create your first shotglass") { newShotglass = true }.buttonStyle(PrimaryButtonStyle()).controlSize(.large).disabled(!store.storageAvailable)
-            Button("Set up a Wine runtime", systemImage: "arrow.right") { section = "runtimes" }.buttonStyle(.plain).foregroundStyle(.secondary)
-            HStack(spacing: 28) {
-                Label("Windows x64", systemImage: "gamecontroller")
-                Label("Your choice of folder", systemImage: "externaldrive")
-                Label("Metal graphics", systemImage: "sparkles")
-            }.font(.caption).foregroundStyle(.secondary).padding(.top, 25)
-        }.frame(maxWidth: .infinity).padding(.vertical, 54)
-            .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 18))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.06)))
-    }
-
-    func shotglassCard(_ entry: ShotglassEntry) -> some View {
-        ZStack(alignment: .topTrailing) {
-            Button { store.selection = entry.id } label: {
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        ShotglassMark().frame(width: 34, height: 38).frame(width: 48, height: 52).background(amber.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
-                        Spacer()
-                    }
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(entry.shotglass.name).font(.headline).lineLimit(1)
-                        Text(entry.shotglass.runtime.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    HStack {
-                        Text("x64").font(.system(size: 10, weight: .medium, design: .monospaced)).padding(.horizontal, 6).padding(.vertical, 3).background(.white.opacity(0.06), in: Capsule())
-                        Text(entry.shotglass.graphics.rawValue).font(.caption2).foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 13))
-                    .overlay(RoundedRectangle(cornerRadius: 13).stroke(store.selection == entry.id ? amber.opacity(0.65) : .white.opacity(0.07)))
-                    .contentShape(RoundedRectangle(cornerRadius: 13))
-            }.buttonStyle(.plain)
-
-            Circle()
-                .fill(entry.shotglass.initialized ? .green.opacity(0.75) : amber)
-                .frame(width: 6, height: 6)
-                .offset(x: -18, y: 8)
-
-            Button { shotglassToTrash = entry } label: {
-                Image(systemName: "trash.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 24, height: 24)
-                    .background(Color.red.opacity(0.9), in: Circle())
-                    .overlay(Circle().stroke(.black.opacity(0.25), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .help("Move \(entry.shotglass.name) to Trash")
-            .accessibilityLabel("Move \(entry.shotglass.name) to Trash")
-            .disabled(store.busy.contains(entry.id))
-            .offset(x: -9, y: 49)
-        }.contextMenu {
-            Button("Rename…", systemImage: "pencil") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .rename) }
-                .disabled(store.busy.contains(entry.id))
-            Button("Duplicate…", systemImage: "plus.square.on.square") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .duplicate) }
-                .disabled(store.busy.contains(entry.id))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -284,8 +269,6 @@ struct ShotglassDetail: View {
     @State private var showDependencies = false
     @State private var showEngineChange = false
     @State private var showForceStopConfirmation = false
-    @State private var showRemoveConfirmation = false
-    @State private var editingShotglass: ShotglassEditRequest?
     @State private var steamFixProgram: Program?
     @State private var enableSteamFix: Bool?
     @State private var heroicRepairProgram: Program?
@@ -306,19 +289,13 @@ struct ShotglassDetail: View {
                     Label("Force Stop", systemImage: "stop.fill")
                 }.disabled(!entry.shotglass.initialized || store.stopping.contains(entry.id))
                 Button("Change engine…", systemImage: "cpu") { showEngineChange = true }.disabled(store.busy.contains(entry.id))
-                Menu {
-                    Button("Rename…", systemImage: "pencil") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .rename) }
-                        .disabled(store.busy.contains(entry.id))
-                    Button("Duplicate…", systemImage: "plus.square.on.square") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .duplicate) }
-                        .disabled(store.busy.contains(entry.id))
-                    Divider()
-                    Button(role: .destructive) { showRemoveConfirmation = true } label: {
-                        Label("Move Shotglass to Trash…", systemImage: "trash")
-                    }.disabled(store.busy.contains(entry.id))
-                } label: {
-                    Image(systemName: "ellipsis").padding(5)
-                }.menuStyle(.borderlessButton).fixedSize()
             }
+            HStack(spacing: 16) {
+                Label(entry.shotglass.runtime.name, systemImage: "cpu")
+                Label(entry.shotglass.graphics.rawValue, systemImage: "display")
+                Label("Windows x64", systemImage: "gamecontroller")
+            }
+            .font(.caption).foregroundStyle(.secondary)
             if entry.engineChangePending {
                 Text("An engine change was interrupted. Open Change engine to restore a Wine environment backup.").foregroundStyle(.orange)
             } else if !entry.shotglass.initialized {
@@ -419,18 +396,11 @@ struct ShotglassDetail: View {
         }
         .sheet(isPresented: $showDependencies) { DependencyView(entry: entry) }
         .sheet(isPresented: $showEngineChange) { ChangeEngineView(entry: entry) }
-        .sheet(item: $editingShotglass) { request in ShotglassNameView(entry: request.entry, mode: request.mode) }
         .confirmationDialog("Force Stop \(entry.shotglass.name)?", isPresented: $showForceStopConfirmation, titleVisibility: .visible) {
             Button("Force Stop All Windows Apps", role: .destructive) { store.forceStop(entry) }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This will immediately stop every Windows process running in this shotglass. Unsaved game or app progress may be lost. Other shotglasses will not be affected.")
-        }
-        .confirmationDialog("Move \(entry.shotglass.name) to Trash?", isPresented: $showRemoveConfirmation, titleVisibility: .visible) {
-            Button("Move Shotglass to Trash", role: .destructive) { store.removeShotglass(entry) }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Spiced-Rum will stop this shotglass's Windows processes and move its entire folder to macOS Trash, including its Windows environment, installed apps and games, settings, and backups. You can restore it from Trash. The shared Wine engine will stay installed.")
         }
         .confirmationDialog("Repair Heroic's blank window?", isPresented: Binding(
             get: { heroicRepairProgram != nil },

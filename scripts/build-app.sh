@@ -58,8 +58,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>CFBundleIconName</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.1.5</string>
-<key>CFBundleVersion</key><string>6</string>
+<key>CFBundleShortVersionString</key><string>0.1.6</string>
+<key>CFBundleVersion</key><string>7</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
