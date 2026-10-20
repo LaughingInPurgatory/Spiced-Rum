@@ -58,6 +58,7 @@ This is your game and app library. The search field filters the cards by name, a
 - A **green light** means the shotglass finished its initial setup. An **amber light** means it still needs setup or a retry.
 - **Launch** opens a saved Windows shortcut. **Run installer or executable…** opens another Windows program once.
 - **Add application…** saves an installed `.exe` as a shortcut.
+- The card menu can **Rename…** or **Duplicate…** a shotglass. A duplicate copies its Windows environment, installed games and apps, settings, and shortcuts, but leaves backups behind. Allow roughly the same free space as the original.
 - **Install components…** adds Windows fonts, DLLs and settings commonly requested by games.
 - **Graphics** changes the renderer for that shotglass when its engine supports another option.
 - **Change engine…** switches the shotglass to another installed engine and keeps a Wine-environment backup so you can recover.
