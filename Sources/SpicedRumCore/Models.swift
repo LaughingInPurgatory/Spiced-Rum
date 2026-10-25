@@ -20,7 +20,7 @@ public struct Runtime: Codable, Identifiable, Hashable {
     public var dxmtPackage: URL?
     public var managedRoot: URL?
     public var gptkVersion: String? = nil
-    public var defaultGraphics: Graphics { dxvkPackage != nil ? .dxvk : dxmt ? .dxmt : d3dMetal ? .metal : .wine }
+    public var defaultGraphics: Graphics { dxmt ? .dxmt : d3dMetal ? .metal : .wine }
     public init(name: String, executable: URL, useRosetta: Bool, d3dMetal: Bool, dxmt: Bool = false, version: String) {
         self.name = name; self.executable = executable; self.useRosetta = useRosetta
         self.d3dMetal = d3dMetal; self.dxmt = dxmt; self.version = version
@@ -100,11 +100,14 @@ public struct Shotglass: Codable, Identifiable {
     public var name: String
     public var runtime: Runtime
     public var graphics: Graphics
+    /// A per-shotglass DXVK choice. Nil keeps compatibility with catalogs that
+    /// stored the selected package on the runtime.
+    public var dxvkPackage: URL? = nil
     public var created = Date()
     public var initialized = false
     public var programs: [Program] = []
-    public init(name: String, runtime: Runtime, graphics: Graphics) {
-        self.name = name; self.runtime = runtime; self.graphics = graphics
+    public init(name: String, runtime: Runtime, graphics: Graphics, dxvkPackage: URL? = nil) {
+        self.name = name; self.runtime = runtime; self.graphics = graphics; self.dxvkPackage = dxvkPackage
     }
     public func save(in folder: URL) throws {
         let encoder = JSONEncoder()
@@ -128,6 +131,7 @@ public struct ShotglassEntry: Identifiable {
     public init(shotglass: Shotglass, folder: URL) { self.shotglass = shotglass; self.folder = folder }
     public var prefix: URL { folder.appendingPathComponent("prefix", isDirectory: true) }
     public var log: URL { folder.appendingPathComponent("session.log") }
+    public var dxvkPackage: URL? { shotglass.dxvkPackage ?? shotglass.runtime.dxvkPackage }
     public var engineChangePending: Bool { FileManager.default.fileExists(atPath: folder.appendingPathComponent("engine-change.json").path) }
 }
 

@@ -48,6 +48,24 @@ public enum ShotglassEngines {
         return false
     }
 
+    public static func backupReferences(dxvkPackage packageURL: URL, for entry: ShotglassEntry) throws -> Bool {
+        let root = entry.folder.appendingPathComponent("engine-backups", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: root.path) else { return false }
+        let folders = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+        for folder in folders where UUID(uuidString: folder.lastPathComponent) != nil
+            && FileManager.default.fileExists(atPath: folder.appendingPathComponent("environment.json").path) {
+            let saved: Shotglass
+            do { saved = try Shotglass.load(from: folder) }
+            catch { throw RumError.message("Cannot verify engine backups for \(entry.shotglass.name). Resolve or remove the unreadable backup at \(folder.path) before removing a DXVK version.") }
+            guard saved.id == entry.id else {
+                throw RumError.message("An engine backup in \(entry.shotglass.name) has mismatched shotglass metadata. Inspect \(folder.path) before removing a DXVK version.")
+            }
+            let savedPackage = saved.dxvkPackage ?? saved.runtime.dxvkPackage
+            if savedPackage?.standardizedFileURL == packageURL.standardizedFileURL { return true }
+        }
+        return false
+    }
+
     static func snapshot(_ entry: ShotglassEntry) throws -> EngineBackup {
         let fm = FileManager.default
         let values = try entry.prefix.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
@@ -84,6 +102,7 @@ public enum ShotglassEngines {
         var installed: [String] = []
         var restored = entry
         restored.shotglass.runtime = backup.shotglass.runtime; restored.shotglass.graphics = backup.shotglass.graphics
+        restored.shotglass.dxvkPackage = backup.shotglass.dxvkPackage
         restored.shotglass.initialized = backup.shotglass.initialized
         do {
             for path in environmentPaths {
@@ -121,6 +140,7 @@ public enum ShotglassEngines {
         if runtime.defaultGraphics == .dxvk { try Wine.validateDXVK(runtime.dxvkPackage) }
         var changed = entry
         changed.shotglass.runtime = runtime; changed.shotglass.graphics = runtime.defaultGraphics
+        changed.shotglass.dxvkPackage = nil
         if !entry.shotglass.initialized && !FileManager.default.fileExists(atPath: entry.prefix.path) {
             // No Windows environment exists to migrate or back up yet.
             try changed.shotglass.save(in: changed.folder)

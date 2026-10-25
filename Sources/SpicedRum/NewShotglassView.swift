@@ -9,9 +9,11 @@ struct NewShotglassView: View {
     @State private var graphics: Graphics = .wine
     @State private var location: URL?
     @State private var dxvk: URL?
+    @State private var dxvkPackages: [DXVKPackage] = []
     @State private var error: String?
     @State private var addRuntime = false
     @State private var downloadEngine = false
+    @State private var manageDXVKVersions = false
     var runtime: Runtime? { store.catalog.runtimes.first { $0.id == runtimeID } }
 
     var body: some View {
@@ -37,15 +39,25 @@ struct NewShotglassView: View {
             }
             Picker("Graphics", selection: $graphics) {
                 Text("Runtime default").tag(Graphics.wine)
-                Text("DXVK → MoltenVK → Metal").tag(Graphics.dxvk)
+                if let runtime, EngineInstaller.supportsMacOSDXVK(runtime) || runtime.dxvkPackage != nil {
+                    Text("DXVK → MoltenVK → Metal").tag(Graphics.dxvk)
+                }
                 if runtime?.d3dMetal == true { Text("D3DMetal → Metal (DirectX 11/12)").tag(Graphics.metal) }
                 if runtime?.dxmt == true { Text("DXMT → Metal (DirectX 10/11)").tag(Graphics.dxmt) }
             }
             if graphics == .dxvk {
-                Text(runtime?.dxvkPackage != nil ? "DXVK and MoltenVK were set up with this engine. Spiced-Rum will install the correct DLLs into your new shotglass automatically." : "Use a macOS-compatible DXVK package and a runtime with MoltenVK. Linux DXVK packages may require Vulkan features unavailable on your Mac.").font(.caption).foregroundStyle(.secondary)
+                Text("Choose a macOS-compatible DXVK version for this shotglass. Its choice stays independent from other shotglasses using the same engine.").font(.caption).foregroundStyle(.secondary)
+                if !dxvkPackages.isEmpty {
+                    Picker("DXVK version", selection: $dxvk) {
+                        ForEach(dxvkPackages) { package in Text(package.title).tag(Optional(package.folder)) }
+                    }
+                }
                 HStack {
                     Text(dxvk?.lastPathComponent ?? "No DXVK package selected").foregroundStyle(.secondary)
                     Spacer()
+                    if runtime.map(EngineInstaller.supportsMacOSDXVK) == true {
+                        Button("Manage versions…") { manageDXVKVersions = true }
+                    }
                     Button("Choose extracted DXVK…") { if let folder = chooseFolder(prompt: "Use DXVK Package") { dxvk = folder } }
                 }
             }
@@ -72,10 +84,36 @@ struct NewShotglassView: View {
                     .disabled(runtime == nil || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (graphics == .dxvk && dxvk == nil))
             }
         }.padding(30).frame(width: 560)
-        .onAppear { runtimeID = store.catalog.runtimes.first?.id }
-        .onChange(of: runtimeID) { _, _ in graphics = runtime?.defaultGraphics ?? .wine; dxvk = runtime?.dxvkPackage }
+        .onAppear {
+            if let first = store.catalog.runtimes.first {
+                runtimeID = first.id
+                loadDXVKPackages(for: first, chooseDefault: true)
+            }
+        }
+        .onChange(of: runtimeID) { _, _ in
+            graphics = runtime?.defaultGraphics ?? .wine
+            if let runtime { loadDXVKPackages(for: runtime, chooseDefault: true) }
+        }
         .onChange(of: store.catalog.runtimes.count) { _, _ in if runtimeID == nil { runtimeID = store.catalog.runtimes.last?.id } }
         .sheet(isPresented: $addRuntime) { AddRuntimeView(source: .sikarugir) }
         .sheet(isPresented: $downloadEngine) { EngineDownloadView() }
+        .sheet(isPresented: $manageDXVKVersions, onDismiss: {
+            if let runtime { loadDXVKPackages(for: runtime, chooseDefault: true) }
+        }) {
+            DXVKVersionView()
+        }
+    }
+
+    private func loadDXVKPackages(for runtime: Runtime, chooseDefault: Bool) {
+        dxvkPackages = store.installedDXVKPackages()
+        guard chooseDefault else { return }
+        if let current = dxvkPackages.first(where: { $0.folder.standardizedFileURL == dxvk?.standardizedFileURL }) {
+            dxvk = current.folder
+        } else if let inherited = runtime.dxvkPackage,
+                  (try? Wine.validateDXVK(inherited)) != nil {
+            dxvk = inherited
+        } else {
+            dxvk = dxvkPackages.first?.folder
+        }
     }
 }

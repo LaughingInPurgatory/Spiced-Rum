@@ -12,12 +12,13 @@ struct ChangeEngineView: View {
     @State private var restoring: EngineBackup?
     @State private var error: String?
     private var runtime: Runtime? { store.catalog.runtimes.first { $0.id == runtimeID } }
+    private var changeWasInterrupted: Bool { entry.engineChangePending && !store.busy.contains(entry.id) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Change shotglass engine").font(.title2.weight(.semibold))
             Text("\(entry.shotglass.name) · Currently using \(entry.shotglass.runtime.name)").foregroundStyle(.secondary)
-            if entry.engineChangePending {
+            if changeWasInterrupted {
                 Text("An engine change was interrupted. Restore a Wine environment backup below before using this shotglass.").foregroundStyle(.orange)
             } else {
                 Picker("Installed engine", selection: $runtimeID) {
@@ -52,7 +53,7 @@ struct ChangeEngineView: View {
             HStack {
                 Spacer()
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
-                if !entry.engineChangePending {
+                if !changeWasInterrupted {
                     Button("Back up Wine & change engine") {
                         if let runtime { store.changeEngine(entry, to: runtime); dismiss() }
                     }.buttonStyle(PrimaryButtonStyle()).disabled(runtime == nil || runtime?.id == entry.shotglass.runtime.id || store.busy.contains(entry.id))

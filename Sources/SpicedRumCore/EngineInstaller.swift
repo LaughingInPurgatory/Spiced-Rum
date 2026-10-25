@@ -11,6 +11,7 @@ public struct EngineAsset: Decodable, Identifiable, Hashable {
     public var releaseTag: String? = nil
     public var releaseName: String? = nil
     public var releaseNotes: String? = nil
+    public var releaseRepository: String? = nil
     public var verifiedDownload: Bool { digest?.hasPrefix("sha256:") == true }
     public var requiresSikarugirLauncher: Bool { name.contains("WineSikarugir11.") }
 
@@ -57,7 +58,9 @@ public struct EngineReleasePage {
 public struct DXVKPackage: Identifiable, Hashable {
     public let title: String
     public let folder: URL
+    public let installationFolder: URL
     public let releaseTag: String?
+    public let releaseRepository: String?
     public var id: String { folder.path }
 }
 
@@ -66,6 +69,22 @@ public struct DXMTPackage: Identifiable, Hashable {
     public let folder: URL
     public let releaseTag: String?
     public var id: String { folder.path }
+}
+
+public enum DXVKSource: String, CaseIterable, Identifiable {
+    case gcenx
+    case sarek
+
+    public var id: String { rawValue }
+    public var title: String { self == .gcenx ? "Gcenx DXVK-macOS" : "DXVK-Sarek" }
+    public var repository: String { self == .gcenx ? "Gcenx/DXVK-macOS" : "pythonlover02/dxvk-sarek" }
+    public var releasesURL: URL { URL(string: "https://github.com/\(repository)/releases")! }
+    public var guidance: String {
+        switch self {
+        case .gcenx: return "Built for macOS and MoltenVK."
+        case .sarek: return "A MoltenVK-capable DXVK fork for Wine. It is experimental on macOS and requires Wine Vulkan output through MoltenVK."
+        }
+    }
 }
 
 private struct DXVKPackageReceipt: Codable {
@@ -145,9 +164,9 @@ public enum EngineInstaller {
             && name.range(of: #"^barrel-wine-[0-9]+(?:\.[0-9]+)+\.tar\.xz$"#, options: .regularExpression) != nil
     }
 
-    public static func dxvkReleases(page: Int = 1) async throws -> EngineReleasePage {
+    public static func dxvkReleases(source: DXVKSource = .gcenx, page: Int = 1) async throws -> EngineReleasePage {
         guard page > 0 else { throw RumError.message("Invalid DXVK release history page.") }
-        let url = URL(string: "https://api.github.com/repos/Gcenx/DXVK-macOS/releases?per_page=12&page=\(page)")!
+        let url = URL(string: "https://api.github.com/repos/\(source.repository)/releases?per_page=12&page=\(page)")!
         var request = URLRequest(url: url)
         request.setValue("Spiced-Rum/0.1", forHTTPHeaderField: "User-Agent")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -162,6 +181,7 @@ public enum EngineInstaller {
                 asset.releaseTag = release.tag_name
                 asset.releaseName = release.name
                 asset.releaseNotes = release.body
+                asset.releaseRepository = source.repository
                 return asset
             }
         }
@@ -177,10 +197,20 @@ public enum EngineInstaller {
     static func isMacOSDXVKAsset(_ asset: EngineAsset) -> Bool {
         let name = asset.name.lowercased()
         let path = asset.browser_download_url.path.lowercased()
-        return asset.browser_download_url.host?.lowercased() == "github.com"
-            && path.hasPrefix("/gcenx/dxvk-macos/releases/download/")
-            && name.contains("dxvk-macos") && name.hasSuffix(".tar.gz")
-            && !name.contains("source") && !name.contains("linux")
+        guard asset.browser_download_url.host?.lowercased() == "github.com",
+              name.hasSuffix(".tar.gz"), !name.contains("source"), !name.contains("linux") else { return false }
+        if path.hasPrefix("/gcenx/dxvk-macos/releases/download/") {
+            return name.contains("dxvk-macos")
+        }
+        return path.hasPrefix("/pythonlover02/dxvk-sarek/releases/download/")
+            && name.contains("dxvk")
+    }
+
+    public static func dxvkSource(for asset: EngineAsset) -> DXVKSource? {
+        let path = asset.browser_download_url.path.lowercased()
+        if path.hasPrefix("/gcenx/dxvk-macos/releases/download/") { return .gcenx }
+        if path.hasPrefix("/pythonlover02/dxvk-sarek/releases/download/") { return .sarek }
+        return nil
     }
 
     static func dxvkReleasePage(_ assets: [EngineAsset], page: Int, link: String?) -> EngineReleasePage {
@@ -190,10 +220,15 @@ public enum EngineInstaller {
 
     public static func installedDXVKPackages(for runtime: Runtime) -> [DXVKPackage] {
         guard let managedRoot = runtime.managedRoot else { return [] }
-        let graphics = managedRoot.appendingPathComponent("graphics", isDirectory: true)
+        return installedDXVKPackages(in: managedRoot.appendingPathComponent("graphics", isDirectory: true))
+    }
+
+    public static func installedDXVKPackages(in directory: URL) -> [DXVKPackage] {
+        let graphics = directory
         guard let folders = try? FileManager.default.contentsOfDirectory(at: graphics, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return [] }
         return folders.compactMap { folder in
-            guard let values = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+            guard !folder.lastPathComponent.hasPrefix("."),
+                  let values = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
                   values.isDirectory == true, values.isSymbolicLink != true else { return nil }
             let nested = folder.appendingPathComponent("package", isDirectory: true)
             let package = FileManager.default.fileExists(atPath: nested.appendingPathComponent("x64/d3d11.dll").path) ? nested : folder
@@ -201,7 +236,9 @@ public enum EngineInstaller {
             let title = folder.lastPathComponent.hasPrefix("DXVK-") ? String(folder.lastPathComponent.dropFirst(5)) : folder.lastPathComponent
             let receiptURL = folder.appendingPathComponent("download-receipt.json")
             let receipt = (try? Data(contentsOf: receiptURL)).flatMap { try? JSONDecoder().decode(DXVKPackageReceipt.self, from: $0) }
-            return DXVKPackage(title: title, folder: package, releaseTag: receipt?.asset.releaseTag)
+            let repository = receipt?.asset.releaseRepository ?? receipt.flatMap { Self.dxvkSource(for: $0.asset)?.repository }
+            return DXVKPackage(title: title, folder: package, installationFolder: folder, releaseTag: receipt?.asset.releaseTag,
+                               releaseRepository: repository)
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
     }
 
@@ -227,11 +264,8 @@ public enum EngineInstaller {
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
     }
 
-    public static func installDXVKPackage(_ asset: EngineAsset, for runtime: Runtime, allowUnverified: Bool = false,
+    public static func installDXVKPackage(_ asset: EngineAsset, in graphics: URL, allowUnverified: Bool = false,
                                           update: @escaping @Sendable (String, Double?) -> Void) async throws -> URL {
-        guard Self.supportsMacOSDXVK(runtime), let managedRoot = runtime.managedRoot else {
-            throw RumError.message("This runtime needs a managed x64 Wine engine with MoltenVK to use macOS DXVK.")
-        }
         guard asset.verifiedDownload || allowUnverified else {
             throw RumError.message("This DXVK release has no publisher checksum. Review the release before installing it.")
         }
@@ -239,12 +273,14 @@ public enum EngineInstaller {
               asset.size > 0, asset.size < 1_000_000_000 else {
             throw RumError.message("The DXVK release asset has an unexpected URL, format, or size.")
         }
+        let repository = asset.releaseRepository ?? Self.dxvkSource(for: asset)?.repository
         if let releaseTag = asset.releaseTag,
-           let existing = installedDXVKPackages(for: runtime).first(where: { $0.releaseTag == releaseTag }) {
+           let existing = installedDXVKPackages(in: graphics).first(where: {
+               $0.releaseTag == releaseTag && $0.releaseRepository == repository
+           }) {
             return existing.folder
         }
 
-        let graphics = managedRoot.appendingPathComponent("graphics", isDirectory: true)
         try FileManager.default.createDirectory(at: graphics, withIntermediateDirectories: true)
         let staging = graphics.appendingPathComponent(".install-dxvk-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
@@ -268,13 +304,14 @@ public enum EngineInstaller {
         let candidates = (try FileManager.default.contentsOfDirectory(at: content, includingPropertiesForKeys: nil))
         let package = ([content] + candidates).first {
             FileManager.default.fileExists(atPath: $0.appendingPathComponent("x64/d3d11.dll").path)
-        }
+        } ?? findDXVKPackage(in: content)
         guard let package else { throw RumError.message("This DXVK archive has an unexpected layout. No engine files were changed.") }
         try Wine.validateDXVK(package)
         let tag = String(asset.releaseTag ?? asset.name).map { character -> Character in
             character.isLetter || character.isNumber || "._-".contains(character) ? character : "-"
         }
-        let destination = graphics.appendingPathComponent("DXVK-" + String(tag) + "-" + asset.name.replacingOccurrences(of: ".tar.gz", with: ""), isDirectory: true)
+        let sourceName = Self.dxvkSource(for: asset)?.id ?? "external"
+        let destination = graphics.appendingPathComponent("DXVK-\(sourceName)-" + String(tag) + "-" + asset.name.replacingOccurrences(of: ".tar.gz", with: ""), isDirectory: true)
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw RumError.message("A DXVK folder with this release name already exists but could not be recognized. Remove it manually after checking its contents, then retry.")
         }
@@ -290,6 +327,18 @@ public enum EngineInstaller {
             try? FileManager.default.removeItem(at: destination)
             throw error
         }
+    }
+
+    private static func findDXVKPackage(in root: URL) -> URL? {
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                                                              options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return nil }
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true,
+                  FileManager.default.fileExists(atPath: url.appendingPathComponent("x64/d3d11.dll").path) else { continue }
+            return url
+        }
+        return nil
     }
 
     public static func installDXMTPackage(_ asset: EngineAsset, for runtime: Runtime, allowUnverified: Bool = false,
@@ -659,27 +708,6 @@ public enum EngineInstaller {
         _ = try await ProcessRunner.capture(URL(fileURLWithPath: "/usr/bin/tar"), ["-xf", archive.path, "-C", folder.path, "--no-same-owner", "--no-same-permissions"])
     }
 
-    public static func setupGraphics(_ runtime: Runtime, update: @escaping @Sendable (String, Double?) -> Void) async throws -> Runtime {
-        var runtime = runtime
-        let root = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
-        // Complete WineHQ macOS bundles include their own Intel MoltenVK and dependencies.
-        guard FileManager.default.fileExists(atPath: root.appendingPathComponent("lib/libMoltenVK.dylib").path), let managed = runtime.managedRoot else { return runtime }
-        update("Setting up macOS DXVK graphics…", nil)
-        let url = URL(string: "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz")!
-        let (file, response) = try await URLSession.shared.download(from: url)
-        defer { try? FileManager.default.removeItem(at: file) }
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RumError.message("The engine downloaded, but its DXVK graphics package could not be downloaded. Retry engine setup when the connection is available.") }
-        // Pinned from the official native-DLL package, checked 16 October 2026.
-        try verify(file, digest: "sha256:acd1520ad105d8ef124a09c8e11a259a5dc8bdc565ad18e0e52693f9807b2477")
-        let graphics = managed.appendingPathComponent("graphics", isDirectory: true)
-        try await unpack(file, into: graphics)
-        let candidates = try FileManager.default.contentsOfDirectory(at: graphics, includingPropertiesForKeys: nil)
-        guard let package = candidates.first(where: { FileManager.default.fileExists(atPath: $0.appendingPathComponent("x64/d3d11.dll").path) }) else { throw RumError.message("The downloaded DXVK package has an unexpected layout. Retry or use another engine.") }
-        try Wine.validateDXVK(package)
-        runtime.dxvkPackage = package
-        return runtime
-    }
-
     public static func checkX64(_ runtime: Runtime, in root: URL) async throws {
         let test = try ShotglassFiles.create(Shotglass(name: "Engine validation", runtime: runtime, graphics: .wine), parent: root)
         do {
@@ -838,9 +866,6 @@ public enum EngineInstaller {
             }
             // Verify again after relocation; some engines contain absolute paths.
             runtime.version = try await Wine.probe(runtime)
-            if feed != .sikarugir && feed != .barrelWine {
-                runtime = try await setupGraphics(runtime, update: update)
-            }
             update("Preparing video playback and H.264 codecs…", nil)
             try await MediaSupport.prepare(runtime)
             update("Testing Windows x64 setup (first run may take a minute)…", nil)

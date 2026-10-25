@@ -11,8 +11,9 @@ struct SetupView: View {
     @State private var showRosetta = false
     @State private var runtimePendingRemoval: Runtime?
     @State private var runtimeRemovalDescription = ""
-    @State private var dxvkRuntime: Runtime?
+    @State private var showDXVKVersions = false
     @State private var dxmtRuntime: Runtime?
+    @State private var showGPTKTrustConfirmation = false
 
     var body: some View {
         ScrollView {
@@ -122,6 +123,63 @@ struct SetupView: View {
                             Button("Check again") { store.discoverAndSetUpAppleGPTK() }
                                 .disabled(store.setupBusy || !store.storageAvailable)
                         }
+                        Divider()
+                        Text("Install through Homebrew").font(.subheadline.weight(.medium))
+                        if Dependencies.brew == nil {
+                            Text("Homebrew is not installed. Set it up above, then Spiced-Rum can check for a matching GPTK package.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if store.homebrewGPTKNeedsTrust {
+                            Text("Homebrew requires you to trust Gcenx's third-party GPTK cask before Spiced-Rum can inspect or install it.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Review and trust Gcenx cask…") { showGPTKTrustConfirmation = true }
+                                .disabled(store.setupBusy)
+                                .confirmationDialog("Trust Gcenx's GPTK cask in Homebrew?", isPresented: $showGPTKTrustConfirmation, titleVisibility: .visible) {
+                                    Button("Trust cask and check version") { store.trustHomebrewGPTK() }
+                                    Button("Cancel", role: .cancel) { }
+                                } message: {
+                                    Text("This records the specific Gcenx GPTK cask as trusted in Homebrew's user configuration. Spiced-Rum will install it only when its Wine host exactly matches your downloaded Apple evaluation image.")
+                                }
+                        } else if store.checkingHomebrewGPTK {
+                            ProgressView("Checking Homebrew's GPTK package…").controlSize(.small)
+                        } else if let version = store.homebrewGPTKVersion {
+                            if let appleVersion = store.gptkBetaVersion,
+                               HomebrewGPTK.matchesAppleEvaluation(version, evaluationVersion: appleVersion) {
+                                Text("Homebrew offers Gcenx GPTK \(version), matching your Apple evaluation image.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if store.canInstallHomebrewGPTK {
+                                    Button(store.homebrewGPTKInstalledVersion == nil ? "Install matching GPTK with Homebrew" : "Update matching GPTK with Homebrew") {
+                                        store.installGPTKWithHomebrew()
+                                    }
+                                        .disabled(store.setupBusy || !store.storageAvailable)
+                                } else {
+                                    Text("The matching Wine host is already installed and listed above.")
+                                        .font(.caption).foregroundStyle(.green)
+                                }
+                            } else if let appleVersion = store.gptkBetaVersion {
+                                if HomebrewGPTK.sameVersion(version, evaluationVersion: appleVersion) {
+                                    Text("Homebrew and the evaluation image both use GPTK \(version), but Apple GPTK \(HomebrewGPTK.currentAppleMajorVersion) is the current release. Spiced-Rum will not offer this older Homebrew package as the current toolkit.")
+                                        .font(.caption).foregroundStyle(.orange)
+                                } else {
+                                    Text("Homebrew's Gcenx package is GPTK \(version), but your Apple evaluation image is GPTK \(appleVersion). These versions do not match, so Spiced-Rum will not combine them. Use Apple's matching Wine host instead.")
+                                        .font(.caption).foregroundStyle(.orange)
+                                }
+                            } else {
+                                Text(HomebrewGPTK.isCurrentAppleVersion(version)
+                                     ? "Homebrew offers Gcenx GPTK \(version). Download Apple's matching evaluation environment so Spiced-Rum can verify an exact version match before installing it."
+                                     : "Homebrew offers Gcenx GPTK \(version), older than Apple's current GPTK \(HomebrewGPTK.currentAppleMajorVersion). Spiced-Rum will not install it as the current toolkit.")
+                                    .font(.caption).foregroundStyle(HomebrewGPTK.isCurrentAppleVersion(version) ? Color.secondary : Color.orange)
+                            }
+                            HStack {
+                                Link("Gcenx Homebrew package ↗", destination: URL(string: "https://github.com/Gcenx/homebrew-wine")!)
+                                Button("Update Homebrew and recheck") { store.refreshHomebrewGPTK(updateMetadata: true) }
+                                    .disabled(store.setupBusy)
+                            }
+                        } else {
+                            Text(store.homebrewGPTKError ?? "Homebrew's GPTK package could not be checked.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Update Homebrew and check") { store.refreshHomebrewGPTK(updateMetadata: true) }
+                                .disabled(store.setupBusy)
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                 }
                 GroupBox { graphicsVersionSection.padding(8) }
@@ -139,9 +197,6 @@ struct SetupView: View {
                             Text(runtime.version).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             if let version = runtime.gptkVersion {
                                 Text("D3DMetal payload · GPTK \(version)").font(.caption2).foregroundStyle(.green)
-                            }
-                            if let package = runtime.dxvkPackage {
-                                Text("DXVK · \(dxvkVersionName(package))").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                             }
                             Text(runtime.executable.path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
                         }
@@ -176,7 +231,7 @@ struct SetupView: View {
         }
         .sheet(isPresented: $showRuntime) { AddRuntimeView(source: chosenSource) }
         .sheet(isPresented: $showDownload) { EngineDownloadView() }
-        .sheet(item: $dxvkRuntime) { DXVKVersionView(runtime: $0) }
+        .sheet(isPresented: $showDXVKVersions) { DXVKVersionView() }
         .sheet(item: $dxmtRuntime) { DXMTVersionView(runtime: $0) }
         .sheet(isPresented: $showRosetta) { RosettaSetupView() }
         .confirmationDialog("Remove this engine?", isPresented: Binding(
@@ -197,10 +252,12 @@ struct SetupView: View {
         .task {
             rosetta = await SystemSetup.rosettaAvailable()
             store.discoverAndSetUpAppleGPTK()
+            store.refreshHomebrewGPTK()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             store.resumeSetup()
             store.discoverAndSetUpAppleGPTK()
+            store.refreshHomebrewGPTK()
         }
     }
 
@@ -219,25 +276,13 @@ struct SetupView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("DXVK · macOS / MoltenVK").font(.subheadline.weight(.semibold))
-                Text("Only macOS DXVK releases are shown. Their Windows x64 components run in the Rosetta Wine engines that provide MoltenVK; Linux Vulkan builds are excluded.")
+                Text("Only macOS DXVK releases are shown; Linux-only builds are excluded. Install versions here, then choose one in a compatible shotglass's graphics options. Each shotglass keeps its own selection.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                let dxvkRuntimes = store.catalog.runtimes.filter(EngineInstaller.supportsMacOSDXVK)
-                if dxvkRuntimes.isEmpty {
-                    Text("Install a managed x64 macOS Wine engine with MoltenVK to manage DXVK versions.")
-                        .font(.callout).foregroundStyle(.secondary)
-                } else {
-                    ForEach(dxvkRuntimes) { runtime in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(runtime.name).fontWeight(.medium)
-                                Text(runtime.dxvkPackage.map { "Selected: DXVK · \(dxvkVersionName($0))" } ?? "No DXVK version selected")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Manage versions…") { dxvkRuntime = runtime }.disabled(store.setupBusy || !store.storageAvailable)
-                        }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                }
+                let count = store.installedDXVKPackages().count
+                Text(count == 1 ? "1 version installed" : "\(count) versions installed")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Manage DXVK versions…") { showDXVKVersions = true }
+                    .disabled(store.setupBusy || !store.storageAvailable)
             }
 
             Divider()
@@ -304,11 +349,6 @@ struct SetupView: View {
                 Link("Find GPTK and evaluation versions at Apple ↗", destination: URL(string: "https://developer.apple.com/download/all/?q=game%20porting%20toolkit")!)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func dxvkVersionName(_ package: URL) -> String {
-        let folder = package.lastPathComponent == "package" ? package.deletingLastPathComponent() : package
-        return folder.lastPathComponent.hasPrefix("DXVK-") ? String(folder.lastPathComponent.dropFirst(5)) : folder.lastPathComponent
     }
 
     private func dxmtVersionName(_ package: URL) -> String {

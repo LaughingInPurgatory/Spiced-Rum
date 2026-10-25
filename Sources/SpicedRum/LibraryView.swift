@@ -268,6 +268,7 @@ struct ShotglassDetail: View {
     let entry: ShotglassEntry
     @State private var showDependencies = false
     @State private var showEngineChange = false
+    @State private var showDXVKVersions = false
     @State private var showForceStopConfirmation = false
     @State private var steamFixProgram: Program?
     @State private var enableSteamFix: Bool?
@@ -296,12 +297,12 @@ struct ShotglassDetail: View {
                 Label("Windows x64", systemImage: "gamecontroller")
             }
             .font(.caption).foregroundStyle(.secondary)
-            if entry.engineChangePending {
+            if entry.engineChangePending && !store.busy.contains(entry.id) {
                 Text("An engine change was interrupted. Open Change engine to restore a Wine environment backup.").foregroundStyle(.orange)
             } else if !entry.shotglass.initialized {
                 Text("This shotglass has not finished setup. If DXVK was selected, choose its extracted package again when retrying.").foregroundStyle(.secondary)
                 Button("Retry initialization") {
-                    let dxvk = entry.shotglass.graphics == .dxvk ? (entry.shotglass.runtime.dxvkPackage ?? chooseFolder(prompt: "Choose DXVK Package")) : nil
+                    let dxvk = entry.shotglass.graphics == .dxvk ? (entry.dxvkPackage ?? chooseFolder(prompt: "Choose DXVK Package")) : nil
                     if entry.shotglass.graphics != .dxvk || dxvk != nil { store.initialize(entry, dxvk: dxvk) }
                 }.disabled(store.busy.contains(entry.id))
             } else {
@@ -311,9 +312,10 @@ struct ShotglassDetail: View {
                     }.buttonStyle(PrimaryButtonStyle())
                     Button("Wine configuration") { store.configure(entry) }
                     Menu {
-                        ForEach(ShotglassGraphics.choices(for: entry.shotglass.runtime)) { graphics in
+                        ForEach(ShotglassGraphics.choices(for: entry)) { graphics in
                             Button {
-                                store.changeGraphics(entry, to: graphics)
+                                if graphics == .dxvk && entry.dxvkPackage == nil { showDXVKVersions = true }
+                                else { store.changeGraphics(entry, to: graphics) }
                             } label: {
                                 if graphics == entry.shotglass.graphics { Label(graphics.rawValue, systemImage: "checkmark") }
                                 else { Text(graphics.rawValue) }
@@ -322,6 +324,10 @@ struct ShotglassDetail: View {
                     } label: {
                         Label("Graphics: \(entry.shotglass.graphics.rawValue)", systemImage: "display")
                     }.help("Change graphics for this shotglass. Windows processes stop before the switch.")
+                    if EngineInstaller.supportsMacOSDXVK(entry.shotglass.runtime) || entry.dxvkPackage != nil {
+                        Button("DXVK version…", systemImage: "square.stack.3d.up") { showDXVKVersions = true }
+                            .help("Choose a DXVK version for this shotglass. Other shotglasses are not changed.")
+                    }
                     Button("Install components…") { showDependencies = true }
                     Spacer()
                     Button("Add application…", systemImage: "plus") {
@@ -396,6 +402,7 @@ struct ShotglassDetail: View {
         }
         .sheet(isPresented: $showDependencies) { DependencyView(entry: entry) }
         .sheet(isPresented: $showEngineChange) { ChangeEngineView(entry: entry) }
+        .sheet(isPresented: $showDXVKVersions) { DXVKVersionView(entry: entry) }
         .confirmationDialog("Force Stop \(entry.shotglass.name)?", isPresented: $showForceStopConfirmation, titleVisibility: .visible) {
             Button("Force Stop All Windows Apps", role: .destructive) { store.forceStop(entry) }
             Button("Cancel", role: .cancel) { }

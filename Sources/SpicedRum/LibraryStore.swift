@@ -21,7 +21,13 @@ final class LibraryStore: ObservableObject {
     @Published var gptkBetaAvailable = false
     @Published var gptkBetaVersion: String?
     @Published var gptkEvaluationVersions: [String] = []
+    @Published var homebrewGPTKVersion: String?
+    @Published var homebrewGPTKInstalledVersion: String?
+    @Published var homebrewGPTKError: String?
+    @Published var homebrewGPTKNeedsTrust = false
+    @Published var checkingHomebrewGPTK = false
     var support: URL { catalogURL.deletingLastPathComponent() }
+    var dxvkDirectory: URL { support.appendingPathComponent("Graphics/DXVK", isDirectory: true) }
     var setupLog: URL { support.appendingPathComponent("setup.log") }
     private let catalogURL: URL
     private var attemptedGPTKPaths: Set<String> = []
@@ -51,6 +57,18 @@ final class LibraryStore: ObservableObject {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(updated).write(to: catalogURL, options: .atomic)
         catalog = updated
+    }
+
+    func installedDXVKPackages() -> [DXVKPackage] {
+        var packages = EngineInstaller.installedDXVKPackages(in: dxvkDirectory)
+        let engines = support.appendingPathComponent("Engines", isDirectory: true)
+        for runtime in catalog.runtimes {
+            guard let root = RuntimeManagement.managedEngineDirectory(for: runtime, inside: engines) else { continue }
+            packages.append(contentsOf: EngineInstaller.installedDXVKPackages(in: root.appendingPathComponent("graphics", isDirectory: true)))
+        }
+        var unique: [String: DXVKPackage] = [:]
+        for package in packages { unique[package.folder.standardizedFileURL.path] = package }
+        return unique.values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
     }
 
     func reload() {
@@ -216,6 +234,113 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    var canInstallHomebrewGPTK: Bool {
+        guard let version = homebrewGPTKVersion,
+              HomebrewGPTK.matchesAppleEvaluation(version, evaluationVersion: gptkBetaVersion) else { return false }
+        return !availableGPTKHosts.contains { $0.version.localizedStandardCompare(version) == .orderedSame }
+    }
+
+    func refreshHomebrewGPTK(updateMetadata: Bool = false) {
+        guard let brew = Dependencies.brew else {
+            homebrewGPTKVersion = nil
+            homebrewGPTKInstalledVersion = nil
+            homebrewGPTKError = nil
+            homebrewGPTKNeedsTrust = false
+            return
+        }
+        if updateMetadata {
+            guard !setupBusy else { return }
+            setupBusy = true
+            setupMessage = "Updating Homebrew's package index before checking GPTK…"
+            setupProgress = nil
+        }
+        checkingHomebrewGPTK = true
+        Task {
+            defer {
+                checkingHomebrewGPTK = false
+                if updateMetadata { setupBusy = false }
+            }
+            do {
+                if updateMetadata {
+                    try await ProcessRunner.run(brew, ["update"], environment: Dependencies.hostEnvironment,
+                                                directory: support, log: setupLog, label: "Updating Homebrew package metadata")
+                }
+                guard try await HomebrewGPTK.isTrusted(using: brew) else {
+                    homebrewGPTKVersion = nil
+                    homebrewGPTKInstalledVersion = nil
+                    homebrewGPTKError = nil
+                    homebrewGPTKNeedsTrust = true
+                    return
+                }
+                homebrewGPTKNeedsTrust = false
+                let package = try await HomebrewGPTK.packageInfo(using: brew)
+                homebrewGPTKVersion = package.version
+                homebrewGPTKInstalledVersion = package.installedVersion
+                homebrewGPTKError = nil
+            } catch {
+                homebrewGPTKVersion = nil
+                homebrewGPTKInstalledVersion = nil
+                homebrewGPTKError = error.localizedDescription
+            }
+        }
+    }
+
+    func trustHomebrewGPTK() {
+        guard !setupBusy, let brew = Dependencies.brew else { return }
+        setupBusy = true
+        setupMessage = "Adding the Gcenx GPTK cask to Homebrew's trusted casks…"
+        error = nil
+        Task {
+            do {
+                try await HomebrewGPTK.trust(using: brew, directory: support, log: setupLog)
+                setupBusy = false
+                setupMessage = "Gcenx's Homebrew cask is trusted. Checking whether its version matches Apple's evaluation image…"
+                refreshHomebrewGPTK(updateMetadata: true)
+            } catch {
+                setupBusy = false
+                setupMessage = "Could not trust the Homebrew GPTK cask"
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    func installGPTKWithHomebrew() {
+        guard !setupBusy, let brew = Dependencies.brew,
+              let version = homebrewGPTKVersion,
+              HomebrewGPTK.matchesAppleEvaluation(version, evaluationVersion: gptkBetaVersion) else {
+            setupMessage = "Spiced-Rum can install the Homebrew Wine host only when its version matches Apple's downloaded evaluation environment. Download the matching Apple evaluation image, then check again."
+            return
+        }
+        setupBusy = true
+        error = nil
+        setupMessage = "Installing the matching GPTK \(version) Wine host with Homebrew…"
+        setupProgress = nil
+        Task {
+            do {
+                let applications = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+                try FileManager.default.createDirectory(at: applications, withIntermediateDirectories: true)
+                let verb = homebrewGPTKInstalledVersion == nil ? "install" : "upgrade"
+                try await ProcessRunner.run(brew, [verb, "--cask", "--appdir=\(applications.path)", HomebrewGPTK.cask],
+                                            environment: Dependencies.hostEnvironment, directory: support,
+                                            log: setupLog, label: "Homebrew GPTK")
+                setupBusy = false
+                availableGPTKHosts = RuntimeDiscovery.appleGamePortingToolkits()
+                detectedGPTK = availableGPTKHosts.first
+                guard let runtime = availableGPTKHosts.first(where: {
+                    $0.version.localizedStandardCompare(version) == .orderedSame
+                }) else {
+                    setupMessage = "Homebrew finished, but Spiced-Rum could not find the matching GPTK \(version) Wine host in ~/Applications. See the setup log."
+                    return
+                }
+                setUpAppleGPTK(runtime)
+            } catch {
+                setupBusy = false
+                setupMessage = "Homebrew GPTK setup needs attention"
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
     func installEngine(_ asset: EngineAsset, feed: EngineFeed, allowUnverified: Bool = false) {
         guard !setupBusy else { return }
         setupBusy = true; setupMessage = "Preparing engine…"; setupProgress = nil
@@ -233,16 +358,99 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    func installDXVK(_ asset: EngineAsset, for runtime: Runtime, allowUnverified: Bool = false) {
-        manageDXVK(for: runtime) {
-            try await EngineInstaller.installDXVKPackage(asset, for: runtime, allowUnverified: allowUnverified) { message, progress in
+    func installDXVK(_ asset: EngineAsset, applyingTo entry: ShotglassEntry? = nil, allowUnverified: Bool = false) {
+        manageDXVK(shotglassID: entry?.id) {
+            try await EngineInstaller.installDXVKPackage(asset, in: self.dxvkDirectory, allowUnverified: allowUnverified) { message, progress in
                 Task { @MainActor in self.setupMessage = message; self.setupProgress = progress }
             }
         }
     }
 
-    func selectDXVK(_ package: DXVKPackage, for runtime: Runtime) {
-        manageDXVK(for: runtime) { package.folder }
+    func selectDXVK(_ package: DXVKPackage, for entry: ShotglassEntry) {
+        manageDXVK(shotglassID: entry.id) { package.folder }
+    }
+
+    @discardableResult
+    func removeDXVKPackage(_ package: DXVKPackage) -> Bool {
+        guard !setupBusy else { error = "Wait for the current setup task to finish before removing a DXVK version."; return false }
+        setupBusy = true
+        defer { setupBusy = false }
+        error = nil
+
+        do {
+            let installFolder = package.installationFolder.standardizedFileURL
+            let packageFolder = package.folder.standardizedFileURL
+            guard packageFolder == installFolder || packageFolder == installFolder.appendingPathComponent("package", isDirectory: true) else {
+                throw RumError.message("Spiced-Rum could not verify this DXVK package folder. No files were removed.")
+            }
+
+            let engines = support.appendingPathComponent("Engines", isDirectory: true)
+            var allowedRoots = [dxvkDirectory.standardizedFileURL]
+            for runtime in catalog.runtimes {
+                guard let root = RuntimeManagement.managedEngineDirectory(for: runtime, inside: engines) else { continue }
+                allowedRoots.append(root.appendingPathComponent("graphics", isDirectory: true).standardizedFileURL)
+            }
+            guard let parent = allowedRoots.first(where: { installFolder.deletingLastPathComponent() == $0 }) else {
+                throw RumError.message("This DXVK version is outside Spiced-Rum's managed DXVK folders. No files were removed.")
+            }
+            let parentValues = try parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard parentValues.isDirectory == true, parentValues.isSymbolicLink != true else {
+                throw RumError.message("Spiced-Rum could not verify the DXVK library folder. No files were removed.")
+            }
+            let values = try installFolder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else {
+                throw RumError.message("Spiced-Rum could not verify this DXVK version folder. No files were removed.")
+            }
+
+            var shotglassUpdates: [(original: ShotglassEntry, updated: ShotglassEntry)] = []
+            for folder in catalog.shotglassFolders {
+                let shotglass = try Shotglass.load(from: folder)
+                let entry = ShotglassEntry(shotglass: shotglass, folder: folder)
+                if entry.engineChangePending {
+                    throw RumError.message("Restore the pending engine change in \(shotglass.name) before removing DXVK versions.")
+                }
+                if shotglass.graphics == .dxvk, entry.dxvkPackage?.standardizedFileURL == packageFolder {
+                    throw RumError.message("\(shotglass.name) is using this DXVK version. Change its graphics option before removing the version.")
+                }
+                if try ShotglassEngines.backupReferences(dxvkPackage: packageFolder, for: entry) {
+                    throw RumError.message("An engine backup for \(shotglass.name) still refers to this DXVK version. Delete that backup after checking that you no longer need it.")
+                }
+                let hasShotglassOverride = shotglass.dxvkPackage?.standardizedFileURL == packageFolder
+                let hasLegacyRuntimeReference = shotglass.runtime.dxvkPackage?.standardizedFileURL == packageFolder
+                if hasShotglassOverride || hasLegacyRuntimeReference {
+                    var updatedEntry = entry
+                    if hasShotglassOverride { updatedEntry.shotglass.dxvkPackage = nil }
+                    if hasLegacyRuntimeReference { updatedEntry.shotglass.runtime.dxvkPackage = nil }
+                    shotglassUpdates.append((entry, updatedEntry))
+                }
+            }
+
+            var updated = catalog
+            for index in updated.runtimes.indices where updated.runtimes[index].dxvkPackage?.standardizedFileURL == packageFolder {
+                updated.runtimes[index].dxvkPackage = nil
+            }
+            let quarantine = parent.appendingPathComponent(".remove-dxvk-" + UUID().uuidString, isDirectory: true)
+            try FileManager.default.moveItem(at: installFolder, to: quarantine)
+            do {
+                for change in shotglassUpdates { try change.updated.shotglass.save(in: change.updated.folder) }
+                if updated.runtimes != catalog.runtimes { try persist(updated) }
+            } catch {
+                for change in shotglassUpdates.reversed() { try? change.original.shotglass.save(in: change.original.folder) }
+                try? FileManager.default.moveItem(at: quarantine, to: installFolder)
+                throw error
+            }
+            for change in shotglassUpdates { replaceEntry(change.updated) }
+            do { try FileManager.default.removeItem(at: quarantine) }
+            catch {
+                throw RumError.message("The DXVK version was removed from the library, but macOS could not fully delete its files. They remain at \(quarantine.path). \(error.localizedDescription)")
+            }
+            setupMessage = "DXVK \(package.title) was removed."
+            return true
+        } catch {
+            setupMessage = "DXVK removal needs attention"
+            self.error = error.localizedDescription
+            return false
+        }
     }
 
     func installDXMT(_ asset: EngineAsset, for runtime: Runtime, allowUnverified: Bool = false) {
@@ -353,95 +561,42 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    private func manageDXVK(for runtime: Runtime, package: @escaping () async throws -> URL) {
+    private func manageDXVK(shotglassID: UUID? = nil, package: @escaping () async throws -> URL) {
         guard !setupBusy else { return }
+        if let shotglassID {
+            guard let entry = entries.first(where: { $0.id == shotglassID }) else {
+                error = "This shotglass is no longer available. Refresh the library and try again."; return
+            }
+            guard EngineInstaller.supportsMacOSDXVK(entry.shotglass.runtime) || entry.dxvkPackage != nil else {
+                error = "This shotglass's engine does not provide the macOS MoltenVK support required by DXVK."; return
+            }
+            guard !busy.contains(shotglassID), !entry.engineChangePending else {
+                error = "Finish the current operation or restore the engine backup before changing this shotglass's DXVK version."; return
+            }
+            busy.insert(shotglassID)
+            messages[shotglassID] = "Preparing a DXVK version for this shotglass…"
+        }
         setupBusy = true; setupMessage = "Preparing DXVK…"; setupProgress = nil
+        error = nil
         Task {
-            defer { setupBusy = false }
+            defer {
+                setupBusy = false
+                if let shotglassID { busy.remove(shotglassID) }
+            }
             do {
                 let packageURL = try await package()
-                try await applyDXVK(packageURL, to: runtime)
-                setupMessage = "DXVK \(packageURL.deletingLastPathComponent().lastPathComponent) is active for \(runtime.name) and its shotglasses."
+                if let shotglassID {
+                    guard let entry = entries.first(where: { $0.id == shotglassID }) else {
+                        throw RumError.message("This shotglass was removed while DXVK was being prepared. The downloaded version remains in the DXVK library.")
+                    }
+                    let updated = try await ShotglassGraphics.selectDXVK(entry, package: packageURL)
+                    replaceEntry(updated)
+                    setupMessage = "DXVK \(packageURL.deletingLastPathComponent().lastPathComponent) is selected for \(updated.shotglass.name). Other shotglasses were not changed."
+                    messages[shotglassID] = "DXVK version changed. Relaunch Windows apps to use it."
+                } else {
+                    setupMessage = "DXVK \(packageURL.deletingLastPathComponent().lastPathComponent) is installed. Choose a version separately in each compatible shotglass."
+                }
             } catch { setupMessage = "DXVK setup needs attention"; self.error = error.localizedDescription }
-        }
-    }
-
-    private func applyDXVK(_ package: URL, to runtime: Runtime) async throws {
-        try Wine.validateDXVK(package)
-        guard let runtimeIndex = catalog.runtimes.firstIndex(where: { $0.id == runtime.id }) else {
-            throw RumError.message("This runtime is no longer registered. Refresh the runtime list and try again.")
-        }
-        let oldRuntime = catalog.runtimes[runtimeIndex]
-        guard oldRuntime.managedRoot == runtime.managedRoot else {
-            throw RumError.message("This runtime changed while DXVK was being prepared. Refresh Runtimes & setup and retry.")
-        }
-
-        var affected: [ShotglassEntry] = []
-        for folder in catalog.shotglassFolders {
-            let shotglass = try Shotglass.load(from: folder)
-            if shotglass.runtime.id == runtime.id { affected.append(ShotglassEntry(shotglass: shotglass, folder: folder)) }
-        }
-        guard !affected.contains(where: \.engineChangePending) else {
-            throw RumError.message("A shotglass has an unfinished engine change. Restore its backup before changing DXVK versions.")
-        }
-        guard !affected.contains(where: { busy.contains($0.id) }) else {
-            throw RumError.message("Wait for the current shotglass operation to finish before changing DXVK versions.")
-        }
-        let replacesActiveDXVK = affected.contains { $0.shotglass.initialized && $0.shotglass.graphics == .dxvk }
-        let oldDXVKPackage = oldRuntime.dxvkPackage
-        if replacesActiveDXVK { try Wine.validateDXVK(oldDXVKPackage) }
-
-        var updatedRuntime = oldRuntime
-        updatedRuntime.dxvkPackage = package
-        busy.formUnion(affected.map(\.id))
-        defer { busy.subtract(affected.map(\.id)) }
-        var changed: [(original: ShotglassEntry, updated: ShotglassEntry, replacedPrefixDLLs: Bool)] = []
-        do {
-            for original in affected {
-                var updated = original
-                updated.shotglass.runtime = updatedRuntime
-                var replacedPrefixDLLs = false
-                if original.shotglass.initialized && original.shotglass.graphics == .dxvk {
-                    try await Wine.stopServer(original)
-                    do {
-                        try Wine.removeDXVK(from: original.prefix)
-                        try Wine.installDXVK(from: package, into: original.prefix)
-                        replacedPrefixDLLs = true
-                    } catch {
-                        let failure = error
-                        do {
-                            guard let oldDXVKPackage else { throw RumError.message("The previous DXVK package is unavailable.") }
-                            try Wine.installDXVK(from: oldDXVKPackage, into: original.prefix)
-                        }
-                        catch {
-                            throw RumError.message("DXVK could not be replaced and the previous DLLs could not be restored. The package is preserved at \(package.path).\n\(failure.localizedDescription)\nRecovery: \(error.localizedDescription)")
-                        }
-                        throw failure
-                    }
-                }
-                changed.append((original, updated, replacedPrefixDLLs))
-                try updated.shotglass.save(in: updated.folder)
-                replaceEntry(updated)
-            }
-            var updatedCatalog = catalog
-            updatedCatalog.runtimes[runtimeIndex] = updatedRuntime
-            try persist(updatedCatalog)
-        } catch {
-            let failure = error
-            do {
-                for change in changed.reversed() {
-                    if change.replacedPrefixDLLs {
-                        try await Wine.stopServer(change.updated)
-                        guard let oldDXVKPackage else { throw RumError.message("The previous DXVK package is unavailable.") }
-                        try Wine.installDXVK(from: oldDXVKPackage, into: change.original.prefix)
-                    }
-                    try change.original.shotglass.save(in: change.original.folder)
-                    replaceEntry(change.original)
-                }
-            } catch {
-                throw RumError.message("DXVK changed part of this runtime's shotglasses and automatic rollback could not finish. Existing packages and shotglasses were preserved.\n\(failure.localizedDescription)\nRecovery: \(error.localizedDescription)")
-            }
-            throw failure
         }
     }
 
@@ -626,8 +781,10 @@ final class LibraryStore: ObservableObject {
     }
 
     func create(name: String, runtime: Runtime, graphics: Graphics, parent: URL, dxvk: URL?) throws -> ShotglassEntry {
-        if graphics == .dxvk { try Wine.validateDXVK(dxvk ?? runtime.dxvkPackage) }
-        let entry = try ShotglassFiles.create(Shotglass(name: name.trimmingCharacters(in: .whitespacesAndNewlines), runtime: runtime, graphics: graphics), parent: parent)
+        let selectedDXVK = graphics == .dxvk ? (dxvk ?? runtime.dxvkPackage) : nil
+        if graphics == .dxvk { try Wine.validateDXVK(selectedDXVK) }
+        let shotglass = Shotglass(name: name.trimmingCharacters(in: .whitespacesAndNewlines), runtime: runtime, graphics: graphics, dxvkPackage: selectedDXVK)
+        let entry = try ShotglassFiles.create(shotglass, parent: parent)
         do {
             var updated = catalog; updated.shotglassFolders.append(entry.folder); try persist(updated)
         } catch {
@@ -640,10 +797,20 @@ final class LibraryStore: ObservableObject {
     }
 
     func initialize(_ entry: ShotglassEntry, dxvk: URL?) {
-        perform(entry, message: "Creating Windows x64 environment…") {
-            let ready = try await Wine.initialize(entry, dxvk: dxvk)
+        var target = entry
+        if target.shotglass.graphics == .dxvk {
+            let selectedDXVK = dxvk ?? target.dxvkPackage
+            do {
+                try Wine.validateDXVK(selectedDXVK)
+                target.shotglass.dxvkPackage = selectedDXVK
+                try target.shotglass.save(in: target.folder)
+                replaceEntry(target)
+            } catch { self.error = error.localizedDescription; return }
+        }
+        perform(target, message: "Creating Windows x64 environment…") {
+            let ready = try await Wine.initialize(target, dxvk: target.dxvkPackage ?? dxvk)
             await MainActor.run {
-                if let index = self.entries.firstIndex(where: { $0.id == entry.id }) { self.entries[index] = ready }
+                if let index = self.entries.firstIndex(where: { $0.id == target.id }) { self.entries[index] = ready }
             }
         }
     }

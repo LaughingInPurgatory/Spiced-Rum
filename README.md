@@ -12,123 +12,125 @@
 
 # Spiced-Rum
 
-Spiced-Rum is a macOS app for organizing Windows games and apps into separate Wine environments. It is made for Apple Silicon Macs and brings engine downloads, setup, graphics choices and shortcuts together in one place.
+Spiced-Rum helps you try Windows games and apps on an Apple Silicon Mac. It keeps each game or app in its own **shotglass**, so you can change its settings without changing the others.
 
-The app is highly experimental and began as a personal project. I released it in case it is useful to other people, but game and engine compatibility varies. A successful setup only proves that Wine can start a Windows environment; it does not promise that a particular game will install, render or run well.
+This is a highly experimental personal project. I released it in case it is useful to other people, but many Windows games and apps will not work properly. A successful setup only means Spiced-Rum could start a basic Windows environment; it does not mean a game will install, look right or run well.
 
-[Download the latest Apple Silicon release](https://github.com/LaughingInPurgatory/Spiced-Rum/releases/latest)
+[Download Spiced-Rum](https://github.com/LaughingInPurgatory/Spiced-Rum/releases/latest)
 
-## Before you begin
+## Before you start
 
-- An Apple Silicon Mac running macOS 14 or later. Some engines need a newer macOS version.
-- Rosetta 2, which translates the Intel parts of Wine for Apple Silicon. Spiced-Rum can guide you through installing it.
-- Enough free storage for the engine and each game's shotglass. Large games can take up a lot of space.
-- An internet connection for engine downloads and Windows installers.
+- An Apple Silicon Mac, such as an M1, M2, M3 or M4 Mac.
+- macOS 14 or later. Some engines need a newer version of macOS; Apple's GPTK 4 needs macOS 15 or later.
+- An internet connection to download engines and Windows installers.
+- Enough free storage for your games. Large games can take up a lot of space.
 
-Spiced-Rum does not include Windows, game files, Steam, or Heroic. You provide any Windows installers and sign into your own accounts.
+Spiced-Rum does not include Windows, Steam, Heroic or any games. You provide the Windows installers and sign in to your own accounts.
+
+## A few words in plain English
+
+- **Engine:** the compatibility software that helps a Windows app run on your Mac. You can install more than one engine and try different versions.
+- **Shotglass:** a separate Windows setup for one game or app. It keeps that app's files and settings together.
+- **Graphics option:** the way a game draws its picture. If one option gives you a blank screen or crashes, another may work better.
+
+Spiced-Rum uses Wine-based engines. Wine is not a copy of Windows; it translates the parts of Windows that an app needs. Different games need different parts, so results vary.
 
 ## Get started
 
-### 1. Install a Wine engine
+### 1. Install an engine
 
-Open **Runtimes & setup** in the left sidebar and choose **Download engine…**. Pick a publisher from the menu, then select a release. The app downloads the engine, prepares the pieces it needs and checks that it can create a Windows x64 environment before adding it to your library.
+Open **Runtimes & setup** in the sidebar and choose **Download engine…**. Select a source and a version. Spiced-Rum downloads the engine, sets up the parts it needs and checks that it can start a basic Windows environment.
 
-For a first try, Wine Staging is a useful general-purpose choice. **Barrel Wine** is a CrossOver-based Apple Silicon build; Spiced-Rum also prepares its support libraries and the latest available DXMT runtime. Engines are separate downloads and can be kept side by side.
+You can keep several engines installed. That makes it easy to try an older or newer version if a game has problems.
 
-Some publishers do not provide a checksum for every release. Spiced-Rum will tell you before downloading an unverified release. Only continue if you trust that publisher and version.
+### 2. Create a shotglass
 
-### 2. Make a shotglass
+Open **Shotglasses** in the sidebar and click the **+** button. Give the shotglass a name, choose an installed engine, then choose where to save it. You can use an external drive if it is connected and writable.
 
-Choose **Your shotglasses** in the sidebar, then **New shotglass**. Give it a name, select an installed engine, choose a graphics option and pick a folder for the shotglass. You can use an external drive if it is mounted and writable; APFS is recommended.
+### 3. Install a Windows app or game
 
-A shotglass is a separate Windows environment for a game or app. Its folder contains its Windows settings, installed programs, shortcuts and logs. Keeping games in separate shotglasses makes it easier to try another engine or graphics option without changing your other games.
+Select the shotglass, choose **Run installer or executable…**, and open the Windows `.exe` or `.msi` installer. After it installs, choose **Add application…** and select the program's `.exe` file. Spiced-Rum adds a shortcut you can use with **Launch**.
 
-### 3. Install a game or app
+You can install the Windows versions of Steam or Heroic this way too. Heroic also has an option to extract its installer files directly if its installer incorrectly says Heroic is already running.
 
-Select a shotglass in the sidebar. Choose **Run installer or executable…** and open a Windows `.exe` or `.msi` installer. When installation finishes, choose **Add application…** and select the installed program's `.exe`. A shortcut appears in the shotglass; use **Launch** to open it later.
+## How the app is laid out
 
-For Steam or Heroic, install the Windows version in a shotglass just like another app, then add its executable as a shortcut. Spiced-Rum has a direct extraction option for Heroic's Windows setup file because its installer can incorrectly report that Heroic is already running.
+### Shotglasses in the sidebar
 
-## Finding your way around
+The **Shotglasses** list is where you choose which game or app to manage. The buttons above the list add a shotglass, import one or refresh the list. Hover over a button to see what it does. A green light means the shotglass is ready; an amber light means it still needs setup. The trash button is beside each shotglass.
 
-### Your shotglasses
+Select a shotglass to see its engine, graphics option and saved app shortcuts in the main area. From there you can:
 
-When Spiced-Rum opens, a short animation shows rum pouring into a shotglass. Choose **Skip intro** to go straight to the app. The animation is skipped automatically when macOS Reduce Motion is enabled.
+- **Launch** a saved shortcut or run another Windows installer.
+- **Add application…** to save a shortcut to an installed `.exe`.
+- **Install components…** if a game asks for a Windows font or system component.
+- **Change engine…** to try another installed engine.
+- **Graphics** to choose another graphics option supported by that engine.
+- **Show files** or **Logs** to find the shotglass folder or see what happened when something failed.
+- **Force Stop** to stop Windows apps in that shotglass. Unsaved progress may be lost; other shotglasses are not affected.
 
-The **Shotglasses** section in the sidebar lists your game and app environments. Select a shotglass to see its engine, graphics setting, shortcuts and controls in the main area. The plus, refresh and import buttons above the list manage your library; hover over each button to see its label.
+Use the shotglass's sidebar menu to rename or duplicate it. The trash button moves the shotglass and its installed games to macOS Trash. Removing a shotglass does not remove its shared engine.
 
-- A **green light** means the shotglass finished its initial setup. An **amber light** means it still needs setup or a retry.
-- The small trash button beside a shotglass moves it to macOS Trash. Rename and duplicate actions are available from the shotglass row's context menu.
-- **Launch** opens a saved Windows shortcut. **Run installer or executable…** opens another Windows program once.
-- **Add application…** saves an installed `.exe` as a shortcut.
-- **Duplicate…** copies its Windows environment, installed games and apps, settings, and shortcuts, but leaves backups behind. Allow roughly the same free space as the original.
-- **Install components…** adds Windows fonts, DLLs and settings commonly requested by games.
-- **Graphics** changes the renderer for that shotglass when its engine supports another option.
-- **Change engine…** switches the shotglass to another installed engine and keeps a Wine-environment backup so you can recover.
-- **Show files** opens the shotglass folder. **Logs** opens its Wine output to help diagnose setup or launch problems.
-- **Force Stop** stops all Wine processes in that shotglass. Unsaved progress may be lost; other shotglasses are unaffected.
-- The trash button moves the complete shotglass folder to macOS Trash, including installed games and backups. The shared engine remains installed.
+Duplicating a shotglass copies its Windows environment, installed games and apps, settings and shortcuts. It does not copy old engine-change backups, and the copy can need as much free space as the original.
 
 ### Runtimes & setup
 
-This screen is for shared engines and Mac-wide tools. It shows whether Rosetta is available, where new shotglasses will be stored, and the setup status for video playback and Windows dependency tools. Use **Download engine…** to install more engines. Use the engine's **Remove…** action when no shotglass or backup needs it.
+Use **Runtimes & setup** to install and remove engines, check Rosetta, choose the default location for new shotglasses, and set up video or Windows dependency tools.
 
-The graphics sections manage engine-level packages:
+The DXVK section installs and removes macOS-compatible releases in a shared library, separate from your engines. Choose a DXVK version in a compatible shotglass's graphics options; that choice changes only that shotglass. Spiced-Rum will ask you to switch any shotglass or remove any saved backup that still uses a version before deleting it.
 
-- **DXVK** translates Direct3D 10/11 through Vulkan and MoltenVK. Spiced-Rum lists macOS-compatible builds and keeps versions side by side.
-- **DXMT** translates Direct3D 10/11 to Metal. It is currently offered with Barrel Wine. Use **Manage versions…** to install or select another official DXMT build.
-- **D3DMetal** is Apple's graphics runtime from Game Porting Toolkit (GPTK). It only appears with an engine that already supports it. Spiced-Rum can prepare a GPTK runtime from an Apple evaluation image you downloaded; Apple's terms apply.
+## Choosing an engine or graphics option
 
-These renderer choices are not interchangeable for every game. If one shows a blank screen, crashes or performs poorly, try another supported renderer or engine. Your game files remain in the shotglass while you test.
+Spiced-Rum lists available releases inside the app. These are the main sources:
 
-## Manage an engine or graphics version
+- **Apple Game Porting Toolkit (GPTK):** Apple's tools include a Wine host and D3DMetal graphics support. Spiced-Rum needs Apple's Wine host and the matching evaluation image to set it up. Apple may ask you to sign in, and Apple's terms apply. If Homebrew is installed, Spiced-Rum checks Gcenx's Homebrew package, but only offers it when it matches Apple's current GPTK release and your downloaded evaluation image. Homebrew may ask you to approve trusting this package first. Otherwise, use the matching Apple download. [Apple GPTK](https://developer.apple.com/games/game-porting-toolkit/) · [Gcenx Homebrew package](https://github.com/Gcenx/homebrew-wine)
+- **Barrel Wine:** a Wine build based on CrossOver. Spiced-Rum prepares its support files and DXMT graphics option. [Barrel project](https://github.com/MrTuNNe/Barrel)
+- **Wine Staging, Stable and Devel:** macOS Wine builds with different fixes and changes. [Gcenx's macOS builds](https://github.com/Gcenx/macOS_Wine_builds)
+- **Whisky community Wine:** community-maintained Wine versions. Some need a matching Apple GPTK download. [Releases](https://github.com/frankea/Whisky/releases)
+- **Sikarugir / Kegworks:** macOS Wine engines. Some releases need Sikarugir's own launcher and are not supported by Spiced-Rum. [Engine releases](https://github.com/Sikarugir-App/Engines/releases)
+- **Custom engine:** advanced users can import a complete macOS Wine engine. Linux Wine, Proton and DXVK downloads cannot be used as macOS engines.
 
-To change a shotglass's Wine engine, open it and choose **Change engine…**. Choose an installed version or download another one. Before switching, close the shotglass's Windows apps and save your game. Spiced-Rum stops remaining Wine processes and saves the Windows environment before applying the new engine.
+Graphics options you may see:
 
-The backup contains the Wine environment—Windows system files, registry and drive mappings—not installed games, apps or personal files. After you have checked the new engine, use **Delete backup** to reclaim its space. If a change fails, use **Restore** to return to the saved environment.
+- **D3DMetal** is Apple's graphics support from GPTK.
+- **DXMT** translates some DirectX games to Metal. It is currently offered with Barrel Wine.
+- **DXVK** translates some DirectX games through Vulkan and MoltenVK. Spiced-Rum offers Gcenx's macOS builds and [DXVK-Sarek](https://github.com/pythonlover02/dxvk-sarek). Select its version separately for each shotglass. Sarek is experimental on macOS and may not work with every engine or game.
 
-To change a graphics package, open **Runtimes & setup** and choose **Manage versions…** in the DXVK or DXMT section for that engine. Installations stay side by side. Selecting a different DXMT version updates the shotglasses using DXMT and restores Wine's original `winemetal.dll` when a shotglass switches away from DXMT.
+Not every engine supports every graphics option. If a game shows a blank screen, crashes or performs poorly, try another option or engine.
 
-## Components and video
+## Changing an engine safely
 
-If a game asks for a missing Windows component, open its shotglass and choose **Install components…**. Search the list for the name the game reported. Common examples include Visual C++ runtime files, D3DCompiler 47, DirectX 9 helper libraries and fonts. Components are installed only in the selected shotglass. Some installers ask you to accept a license or make a choice.
+Before changing a shotglass's engine, close its Windows apps and save your game. Spiced-Rum saves a backup of the **Windows environment** so you can restore it if the switch causes a problem.
 
-Managed Wine engines prepare video playback support automatically when available. If an older engine has broken or missing video playback, choose **Set up video playback** in **Runtimes & setup**, then close and reopen its Windows apps.
+The backup does not include installed games, apps or personal files. After you have checked the new engine, choose **Delete backup** to free the space. Choose **Restore** if you need to go back.
 
-Some dependency tools need Homebrew, the macOS package manager. Spiced-Rum can start Homebrew's official installer; macOS Installer handles any administrator approval. Return to Spiced-Rum afterward to continue.
+## Fixing common problems
 
-## A couple of useful fixes
+- **Steam's sign-in window is black:** open the Steam shortcut menu and choose **Fix Steam's black login window…**. This changes how Steam draws its sign-in page. You can use the same menu to undo the fix. Steam client updates are paused while it is enabled.
+- **Heroic opens to a blank window:** choose **Repair Heroic blank window…** from the Heroic shortcut menu. Spiced-Rum clears Heroic's temporary graphics cache and changes how its window is drawn. This setting is for Heroic's window; it does not change the graphics setting used by games launched from Heroic.
+- **A game asks for a missing Windows component:** open the shotglass and choose **Install components…**. Search for the component name shown by the game. Components are added only to that shotglass; some installers may ask you to make a choice.
+- **A video does not play:** open **Runtimes & setup** and choose **Set up video playback**, then close and reopen the Windows app.
+- **A game still will not start:** try another installed engine or supported graphics option, then check the shotglass's **Logs**. The setup check cannot guarantee that a specific game will work.
 
-**Steam's login window is black:** open the Steam shortcut's menu and choose **Fix Steam's black login window…**. This runs Steam's browser interface with GPU rendering disabled and in one process. Steam client updates are paused while the fix is enabled; games keep using the shotglass's graphics setting. Use the same menu to restore Steam's original helper and setting.
+Some helper tools need Homebrew, a macOS package manager. Spiced-Rum can guide you through installing it; macOS may ask you to approve the installer.
 
-**Heroic opens to a blank or broken window:** use **Repair Heroic blank window…** in the Heroic shortcut menu. Spiced-Rum stops the shotglass's Windows processes, clears Heroic's regenerable graphics cache and starts its interface with a software renderer. This affects Heroic's interface, not games launched from it. Save work in other apps in the same shotglass first.
-
-**A game fails to start:** try another engine or supported graphics option, install only the Windows components the game requests, and check **Logs**. A game can fail even when the engine setup check passed. Shotglasses keep files separate, but they are not security sandboxes; only run Windows programs you trust.
+Shotglasses keep their files separate, but they are not security sandboxes. Only run Windows programs you trust.
 
 ## Installing the downloaded app
 
-Download the latest `.zip` from [Releases](https://github.com/LaughingInPurgatory/Spiced-Rum/releases/latest), expand it and move **Spiced-Rum.app** to Applications. Releases use the maintainer's self-signed code-signing certificate; they are not signed with an Apple Developer ID or notarized. The signature helps macOS identify the same signing key and detect changes, but another Mac does not automatically trust that certificate. When you first open a downloaded copy, macOS may ask you to approve it in **System Settings → Privacy & Security**. See [Apple's instructions](https://support.apple.com/en-gb/guide/mac-help/mh40617/27/mac/27).
+Download the latest `.zip` from [Releases](https://github.com/LaughingInPurgatory/Spiced-Rum/releases/latest), expand it and move **Spiced-Rum.app** to Applications.
 
-## Engines included
-
-Available releases change over time. Spiced-Rum lists publisher versions inside the app and installs them side by side.
-
-- **Barrel Wine** is based on CrossOver Wine sources for Apple Silicon. Spiced-Rum prepares its support libraries and DXMT graphics runtime. [Barrel project](https://github.com/MrTuNNe/Barrel)
-- **Apple Game Porting Toolkit** includes Apple's Wine host and D3DMetal runtime. GPTK 4 requires macOS 15 or later. [Apple GPTK](https://developer.apple.com/games/game-porting-toolkit/)
-- **Wine Staging, Stable and Devel** are macOS WineHQ builds. [Gcenx's macOS builds](https://github.com/Gcenx/macOS_Wine_builds)
-- **Whisky community Wine Libraries** are community Wine releases; GPTK-capable builds need a matching Apple payload. [Releases](https://github.com/frankea/Whisky/releases)
-- **Sikarugir / Kegworks** builds can prepare support libraries automatically when the release works without Sikarugir's own launcher. [Sikarugir engines](https://github.com/Sikarugir-App/Engines/releases)
-- You can also import a complete macOS-compatible Wine engine using **Advanced import…**. Linux builds of Wine, Proton or DXVK do not run on macOS just because Rosetta is installed.
+The app is signed with the maintainer's self-signed certificate. It is not signed with an Apple Developer ID or notarized, so macOS may ask you to approve it the first time you open it. The certificate does not make another Mac trust the app automatically. See [Apple's instructions](https://support.apple.com/en-gb/guide/mac-help/mh40617/27/mac/27).
 
 ## Help and project notes
 
-If something goes wrong, the shotglass's **Logs** button opens the Wine log. Please include the engine name, macOS version, game or app, selected graphics option and the relevant log when reporting a problem. Remove account names, access tokens and other private information before sharing a log publicly.
+If you report a problem, include the engine name, macOS version, game or app, graphics option and relevant shotglass log. Remove account names, access tokens and other private information before sharing a log publicly.
 
-Spiced-Rum is a personal, highly experimental project developed by **Laughing In Purgatory**. It is not affiliated with Apple, CodeWeavers, Valve, Heroic Games Launcher or the engine publishers. Windows compatibility varies by game, engine version and Mac.
+Spiced-Rum is developed by **Laughing In Purgatory**. It is not affiliated with Apple, CodeWeavers, Valve, Heroic Games Launcher or the engine publishers.
 
-## For people building Spiced-Rum
+## Building Spiced-Rum
 
-Spiced-Rum is a native SwiftUI macOS app with no package dependencies. Open `Package.swift` in Xcode, or build and test on an Apple Silicon Mac with Xcode or the Swift command-line tools:
+For developers: Spiced-Rum is a SwiftUI macOS app with no package dependencies. Open `Package.swift` in Xcode, or use the Swift command-line tools on an Apple Silicon Mac:
 
 ```sh
 bash scripts/test.sh
@@ -136,4 +138,4 @@ bash scripts/build-app.sh
 open dist/Spiced-Rum.app
 ```
 
-The build is ad-hoc signed by default. If you have a code-signing identity in your login keychain, set `SPICED_RUM_SIGNING_IDENTITY` to its name to use it instead. The app supports macOS 14 and later. The test suite covers library behavior and setup logic. Real Wine, game rendering and publisher-download checks are optional integration tests and require the relevant runtimes or downloads.
+The build is ad-hoc signed by default. To use a code-signing identity from your login keychain, set `SPICED_RUM_SIGNING_IDENTITY` to its name. The app supports macOS 14 and later. Real game compatibility still depends on the game, engine and Mac.

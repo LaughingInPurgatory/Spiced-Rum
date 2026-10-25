@@ -225,7 +225,7 @@ struct DependencyView: View {
 struct DXVKVersionView: View {
     @EnvironmentObject var store: LibraryStore
     @Environment(\.dismiss) var dismiss
-    let runtime: Runtime
+    let entry: ShotglassEntry?
     @State private var assets: [EngineAsset] = []
     @State private var installed: [DXVKPackage] = []
     @State private var loading = true
@@ -233,30 +233,41 @@ struct DXVKVersionView: View {
     @State private var filter = ""
     @State private var nextPage: Int?
     @State private var uncheckedAsset: EngineAsset?
+    @State private var packagePendingRemoval: DXVKPackage?
     @State private var generation = UUID()
+    @State private var source: DXVKSource = .gcenx
 
-    private var currentRuntime: Runtime { store.catalog.runtimes.first(where: { $0.id == runtime.id }) ?? runtime }
-    private var currentPackagePath: String? { currentRuntime.dxvkPackage?.standardizedFileURL.path }
+    init(entry: ShotglassEntry? = nil) { self.entry = entry }
+
+    private var currentEntry: ShotglassEntry? {
+        guard let entry else { return nil }
+        return store.entries.first(where: { $0.id == entry.id }) ?? entry
+    }
+    private var currentPackagePath: String? { currentEntry?.dxvkPackage?.standardizedFileURL.path }
+    private var filteredAssets: [EngineAsset] {
+        assets.filter { filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter) || ($0.releaseTag?.localizedCaseInsensitiveContains(filter) ?? false) }
+    }
+    private var uncheckedSourceTitle: String {
+        guard let uncheckedAsset, let source = EngineInstaller.dxvkSource(for: uncheckedAsset) else { return "the publisher" }
+        return source.title
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("DXVK versions · \(runtime.name)").font(.title2.weight(.semibold))
-            Text("Choose a macOS DXVK build for this runtime. Spiced-Rum downloads it from Gcenx’s DXVK-macOS releases, checks the publisher’s SHA-256 when available, and applies it to shotglasses using DXVK with this runtime. Other shotglasses keep their selected renderer. D3DMetal updates with its GPTK engine.")
+            Text(entry.map { "DXVK version · \($0.shotglass.name)" } ?? "DXVK versions").font(.title2.weight(.semibold))
+            Text(entry == nil
+                 ? "Install macOS DXVK versions here. They are kept separately from engines and can be selected individually in each compatible shotglass."
+                 : "Choose the DXVK version for \(currentEntry?.shotglass.name ?? entry?.shotglass.name ?? "this shotglass"). This changes only this shotglass.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Link("Gcenx DXVK-macOS release source ↗", destination: URL(string: "https://github.com/Gcenx/DXVK-macOS/releases")!)
+            Picker("Source", selection: $source) {
+                ForEach(DXVKSource.allCases) { Text($0.title).tag($0) }
+            }.pickerStyle(.segmented).disabled(loading || store.setupBusy)
+            Text(source.guidance).font(.caption).foregroundStyle(.secondary)
+            Link("\(source.title) release source ↗", destination: source.releasesURL)
             if !installed.isEmpty {
                 Text("Installed versions").font(.headline)
                 ForEach(installed) { package in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(package.title).fontWeight(.medium)
-                            if package.folder.standardizedFileURL.path == currentPackagePath { Text("Currently selected").font(.caption).foregroundStyle(.green) }
-                        }
-                        Spacer()
-                        Button(package.folder.standardizedFileURL.path == currentPackagePath ? "Selected" : "Use version") {
-                            store.selectDXVK(package, for: currentRuntime)
-                        }.disabled(store.setupBusy || package.folder.standardizedFileURL.path == currentPackagePath)
-                    }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                    installedPackageRow(package)
                 }
             }
             Text("Available downloads").font(.headline)
@@ -265,26 +276,7 @@ struct DXVKVersionView: View {
             else {
                 ScrollView {
                     LazyVStack(spacing: 9) {
-                        ForEach(assets.filter { filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter) || ($0.releaseTag?.localizedCaseInsensitiveContains(filter) ?? false) }) { asset in
-                            HStack(alignment: .center) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(asset.releaseTag ?? asset.name).fontWeight(.medium).lineLimit(2)
-                                    Text("\(asset.name) · \(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file)) · \(asset.verifiedDownload ? "publisher SHA-256" : "no publisher checksum")")
-                                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                                }
-                                Spacer()
-                                if let package = installed.first(where: { $0.releaseTag != nil && $0.releaseTag == asset.releaseTag }) {
-                                    Button(package.folder.standardizedFileURL.path == currentPackagePath ? "Selected" : "Use installed") {
-                                        store.selectDXVK(package, for: currentRuntime)
-                                    }.disabled(store.setupBusy || package.folder.standardizedFileURL.path == currentPackagePath)
-                                } else {
-                                    Button(asset.verifiedDownload ? "Download & apply" : "Install legacy release…") {
-                                        if asset.verifiedDownload { store.installDXVK(asset, for: currentRuntime) }
-                                        else { uncheckedAsset = asset }
-                                    }.disabled(store.setupBusy)
-                                }
-                            }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-                        }
+                        ForEach(filteredAssets) { asset in availableAssetRow(asset) }
                         if loading { ProgressView("Loading older releases…") }
                         if nextPage != nil { Button("Load older releases") { Task { await load(reset: false) } }.disabled(loading || store.setupBusy) }
                     }
@@ -304,25 +296,105 @@ struct DXVKVersionView: View {
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.setupBusy)
             }
         }.padding(28).frame(width: 700)
-            .task { installed = EngineInstaller.installedDXVKPackages(for: currentRuntime); await load() }
-            .interactiveDismissDisabled(store.setupBusy)
-            .confirmationDialog("Install DXVK without a publisher checksum?", isPresented: Binding(get: { uncheckedAsset != nil }, set: { if !$0 { uncheckedAsset = nil } }), titleVisibility: .visible) {
-                if let asset = uncheckedAsset {
-                    Button("Install from Gcenx") { store.installDXVK(asset, for: currentRuntime, allowUnverified: true); uncheckedAsset = nil }
-                }
-                Button("Cancel", role: .cancel) { uncheckedAsset = nil }
-            } message: {
-                Text("The archive comes from Gcenx’s HTTPS release page, but this release has no publisher checksum. Spiced-Rum can record its local checksum and validate its DLL layout, but cannot authenticate the download against a publisher checksum. Install only if you trust this release.")
+            .task { installed = store.installedDXVKPackages(); await load() }
+            .onChange(of: store.setupBusy) { wasBusy, isBusy in
+                if wasBusy && !isBusy { installed = store.installedDXVKPackages() }
             }
+            .interactiveDismissDisabled(store.setupBusy)
+            .onChange(of: source) { _, _ in Task { await load() } }
+            .confirmationDialog(packagePendingRemoval == nil ? "Install DXVK without a publisher checksum?" : "Remove this DXVK version?", isPresented: Binding(get: { uncheckedAsset != nil || packagePendingRemoval != nil }, set: { if !$0 { uncheckedAsset = nil; packagePendingRemoval = nil } }), titleVisibility: .visible) {
+                if let pendingPackage = packagePendingRemoval {
+                    Button("Remove DXVK version", role: .destructive) {
+                        if store.removeDXVKPackage(pendingPackage) {
+                            installed.removeAll { $0.id == pendingPackage.id }
+                        }
+                        packagePendingRemoval = nil
+                    }
+                } else if let asset = uncheckedAsset {
+                    Button("Install from \(EngineInstaller.dxvkSource(for: asset)?.title ?? "publisher")") {
+                        store.installDXVK(asset, applyingTo: currentEntry, allowUnverified: true)
+                        uncheckedAsset = nil
+                    }
+                }
+                Button("Cancel", role: .cancel) { uncheckedAsset = nil; packagePendingRemoval = nil }
+            } message: {
+                if packagePendingRemoval != nil {
+                    Text("Spiced-Rum will remove this DXVK version. Change any shotglass currently using it to another graphics option first. Saved engine backups that need it must be deleted first; inactive saved choices will be cleared.")
+                } else {
+                    Text("The archive comes from \(uncheckedSourceTitle)’s HTTPS release page, but this release has no publisher checksum. Spiced-Rum can record its local checksum and validate its DLL layout, but cannot authenticate the download against a publisher checksum. Install only if you trust this release.")
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func availableAssetRow(_ asset: EngineAsset) -> some View {
+        let installedPackage = installed.first { candidate in
+            candidate.releaseTag == asset.releaseTag && candidate.releaseRepository == source.repository
+        }
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(asset.releaseTag ?? asset.name).fontWeight(.medium).lineLimit(2)
+                Text("\(asset.name) · \(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file)) · \(asset.verifiedDownload ? "publisher SHA-256" : "no publisher checksum")")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer()
+            if let package = installedPackage {
+                if let currentEntry {
+                    Button(package.folder.standardizedFileURL.path == currentPackagePath ? "Selected" : "Use installed") {
+                        store.selectDXVK(package, for: currentEntry)
+                    }.disabled(store.setupBusy || package.folder.standardizedFileURL.path == currentPackagePath)
+                } else {
+                    Text("Installed").font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                let buttonTitle = asset.verifiedDownload ? (currentEntry == nil ? "Download" : "Download & use") : "Install legacy release…"
+                Button(buttonTitle) {
+                    if asset.verifiedDownload { store.installDXVK(asset, applyingTo: currentEntry) }
+                    else { uncheckedAsset = asset }
+                }.disabled(store.setupBusy)
+            }
+        }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private func installedPackageRow(_ package: DXVKPackage) -> some View {
+        let isSelected = package.folder.standardizedFileURL.path == currentPackagePath
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(package.title).fontWeight(.medium)
+                if let repository = package.releaseRepository {
+                    Text(repository == DXVKSource.sarek.repository ? "DXVK-Sarek" : "Gcenx DXVK-macOS")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if entry != nil, isSelected { Text("Saved for this shotglass").font(.caption).foregroundStyle(.green) }
+            }
+            Spacer()
+            if let currentEntry {
+                Button(isSelected ? "Selected" : "Use version") {
+                    store.selectDXVK(package, for: currentEntry)
+                }.disabled(store.setupBusy || isSelected)
+            } else {
+                Text("Installed").font(.caption).foregroundStyle(.secondary)
+            }
+            Button(role: .destructive) { packagePendingRemoval = package } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Remove DXVK \(package.title)")
+            .help("Remove this DXVK version")
+            .disabled(store.setupBusy || isSelected)
+        }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func load(reset: Bool = true) async {
         let page = reset ? 1 : (nextPage ?? 1)
         if reset { generation = UUID(); assets = []; nextPage = nil }
         let requestGeneration = generation
+        let requestedSource = source
         loading = true; error = nil
         do {
-            let result = try await EngineInstaller.dxvkReleases(page: page)
+            let result = try await EngineInstaller.dxvkReleases(source: requestedSource, page: page)
+            guard source == requestedSource else { return }
             guard requestGeneration == generation, !Task.isCancelled else { return }
             var seen = Set(assets.map(\.id))
             assets.append(contentsOf: result.assets.filter { seen.insert($0.id).inserted })
