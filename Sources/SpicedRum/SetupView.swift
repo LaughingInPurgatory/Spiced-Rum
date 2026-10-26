@@ -13,6 +13,7 @@ struct SetupView: View {
     @State private var runtimeRemovalDescription = ""
     @State private var showDXVKVersions = false
     @State private var dxmtRuntime: Runtime?
+    @State private var graphicsRuntimeSource: GraphicsRuntimeSource?
     @State private var showGPTKTrustConfirmation = false
 
     var body: some View {
@@ -28,7 +29,7 @@ struct SetupView: View {
                 }
                 GroupBox {
                     HStack {
-                        Label(rosetta == true ? "Rosetta 2 is available" : rosetta == nil ? "Checking Rosetta 2…" : "Rosetta 2 is required for Intel runtimes", systemImage: rosetta == true ? "checkmark.circle.fill" : "cpu")
+                        Label(rosetta == true ? "Rosetta 2 is available" : rosetta == nil ? "Checking Rosetta 2…" : "Rosetta 2 is required for Windows x64 engines", systemImage: rosetta == true ? "checkmark.circle.fill" : "cpu")
                             .foregroundStyle(rosetta == true ? .green : .secondary)
                         Spacer()
                         if rosetta == false { Button("Set up Rosetta…") { showRosetta = true }.disabled(store.setupBusy) }
@@ -201,7 +202,7 @@ struct SetupView: View {
                             Text(runtime.executable.path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
                         }
                         Spacer()
-                        Text(runtime.useRosetta ? "Rosetta · x64" : "Runtime managed").font(.caption).foregroundStyle(.secondary)
+                        Text(runtime.useRosetta ? "Rosetta · x64" : "Native ARM64").font(.caption).foregroundStyle(.secondary)
                         Button("Reveal") { NSWorkspace.shared.selectFile(runtime.executable.path, inFileViewerRootedAtPath: "") }
                         Button("Remove…") { requestRuntimeRemoval(runtime) }
                             .disabled(store.setupBusy || !store.storageAvailable)
@@ -233,6 +234,7 @@ struct SetupView: View {
         .sheet(isPresented: $showDownload) { EngineDownloadView() }
         .sheet(isPresented: $showDXVKVersions) { DXVKVersionView() }
         .sheet(item: $dxmtRuntime) { DXMTVersionView(runtime: $0) }
+        .sheet(item: $graphicsRuntimeSource) { GraphicsRuntimeVersionView(source: $0) }
         .sheet(isPresented: $showRosetta) { RosettaSetupView() }
         .confirmationDialog("Remove this engine?", isPresented: Binding(
             get: { runtimePendingRemoval != nil },
@@ -276,13 +278,42 @@ struct SetupView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("DXVK · macOS / MoltenVK").font(.subheadline.weight(.semibold))
-                Text("Only macOS DXVK releases are shown; Linux-only builds are excluded. Install versions here, then choose one in a compatible shotglass's graphics options. Each shotglass keeps its own selection.")
+                Text("Only macOS DXVK releases are shown; Linux-only builds are excluded. Install and assign DXVK versions to individual shotglasses here. The shotglass graphics options only choose the backend for Direct3D 10/11.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 let count = store.installedDXVKPackages().count
                 Text(count == 1 ? "1 version installed" : "\(count) versions installed")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Manage DXVK versions…") { showDXVKVersions = true }
                     .disabled(store.setupBusy || !store.storageAvailable)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Direct3D 9, Direct3D 12 & OpenGL").font(.subheadline.weight(.semibold))
+                Text("Install and assign mtld3d and Mesa Zink versions here. You can assign a version to each shotglass from its installed-version row. The shotglass's Graphics APIs options choose which compatible backend handles each Windows API. Zink on macOS is experimental and depends on the engine's Vulkan support.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                ForEach(GraphicsRuntimeSource.allCases) { source in
+                    let count = store.installedGraphicsRuntimePackages(source).count
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(source.title).fontWeight(.medium)
+                            Text(count == 1 ? "1 version installed" : "\(count) versions installed")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Manage versions…") { graphicsRuntimeSource = source }
+                            .disabled(store.setupBusy || !store.storageAvailable)
+                    }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Vulkan drivers").font(.subheadline.weight(.semibold))
+                Text("Choose MoltenVK or the engine's default Vulkan driver in each shotglass's Graphics APIs options. MoltenVK is commonly supplied by macOS Wine builds.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()

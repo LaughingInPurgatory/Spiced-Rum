@@ -8,6 +8,32 @@ public enum Graphics: String, Codable, CaseIterable, Identifiable {
     public var id: String { rawValue }
 }
 
+public enum Direct3D9Backend: String, Codable, CaseIterable, Identifiable {
+    case wine = "Wine default"
+    case mtld3d = "mtld3d · Metal"
+    public var id: String { rawValue }
+}
+
+public enum Direct3D12Backend: String, Codable, CaseIterable, Identifiable {
+    case wine = "Wine default"
+    case vkd3dProton = "VKD3D-Proton · Vulkan"
+    public var id: String { rawValue }
+}
+
+public enum VulkanBackend: String, Codable, CaseIterable, Identifiable {
+    case runtimeDefault = "Runtime default"
+    case moltenVK = "MoltenVK"
+    case legacyKosmicKrisp = "KosmicKrisp · Metal 4"
+    public static let allCases: [VulkanBackend] = [.runtimeDefault, .moltenVK]
+    public var id: String { rawValue }
+}
+
+public enum OpenGLBackend: String, Codable, CaseIterable, Identifiable {
+    case wine = "Wine default"
+    case zink = "Zink · Vulkan"
+    public var id: String { rawValue }
+}
+
 public struct Runtime: Codable, Identifiable, Hashable {
     public var id = UUID()
     public var name: String
@@ -100,6 +126,15 @@ public struct Shotglass: Codable, Identifiable {
     public var name: String
     public var runtime: Runtime
     public var graphics: Graphics
+    /// Optional fields preserve the existing graphics choice when decoding older shotglasses.
+    public var direct3D9: Direct3D9Backend? = nil
+    public var direct3D12: Direct3D12Backend? = nil
+    public var vulkan: VulkanBackend? = nil
+    public var openGL: OpenGLBackend? = nil
+    public var mtld3dPackage: URL? = nil
+    public var vkd3dProtonPackage: URL? = nil
+    public var dxgiPackage: URL? = nil
+    public var zinkPackage: URL? = nil
     /// A per-shotglass DXVK choice. Nil keeps compatibility with catalogs that
     /// stored the selected package on the runtime.
     public var dxvkPackage: URL? = nil
@@ -132,6 +167,10 @@ public struct ShotglassEntry: Identifiable {
     public var prefix: URL { folder.appendingPathComponent("prefix", isDirectory: true) }
     public var log: URL { folder.appendingPathComponent("session.log") }
     public var dxvkPackage: URL? { shotglass.dxvkPackage ?? shotglass.runtime.dxvkPackage }
+    public var mtld3dPackage: URL? { shotglass.mtld3dPackage }
+    public var vkd3dProtonPackage: URL? { shotglass.vkd3dProtonPackage }
+    public var dxgiPackage: URL? { shotglass.dxgiPackage }
+    public var zinkPackage: URL? { shotglass.zinkPackage }
     public var engineChangePending: Bool { FileManager.default.fileExists(atPath: folder.appendingPathComponent("engine-change.json").path) }
 }
 

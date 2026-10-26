@@ -256,7 +256,7 @@ struct DXVKVersionView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(entry.map { "DXVK version · \($0.shotglass.name)" } ?? "DXVK versions").font(.title2.weight(.semibold))
             Text(entry == nil
-                 ? "Install macOS DXVK versions here. They are kept separately from engines and can be selected individually in each compatible shotglass."
+                 ? "Install and manage macOS DXVK versions here, then assign a version to each compatible shotglass."
                  : "Choose the DXVK version for \(currentEntry?.shotglass.name ?? entry?.shotglass.name ?? "this shotglass"). This changes only this shotglass.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Picker("Source", selection: $source) {
@@ -343,6 +343,13 @@ struct DXVKVersionView: View {
                     Button(package.folder.standardizedFileURL.path == currentPackagePath ? "Selected" : "Use installed") {
                         store.selectDXVK(package, for: currentEntry)
                     }.disabled(store.setupBusy || package.folder.standardizedFileURL.path == currentPackagePath)
+                } else if !store.entries.isEmpty {
+                    Menu("Assign to shotglass") {
+                        ForEach(store.entries) { entry in
+                            Button(entry.shotglass.name) { store.selectDXVK(package, for: entry) }
+                                .disabled(store.setupBusy || uses(package, in: entry))
+                        }
+                    }.disabled(store.setupBusy)
                 } else {
                     Text("Installed").font(.caption).foregroundStyle(.secondary)
                 }
@@ -359,6 +366,7 @@ struct DXVKVersionView: View {
     @ViewBuilder
     private func installedPackageRow(_ package: DXVKPackage) -> some View {
         let isSelected = package.folder.standardizedFileURL.path == currentPackagePath
+        let isActive = store.entries.contains { $0.shotglass.graphics == .dxvk && uses(package, in: $0) }
         HStack {
             VStack(alignment: .leading, spacing: 3) {
                 Text(package.title).fontWeight(.medium)
@@ -373,6 +381,13 @@ struct DXVKVersionView: View {
                 Button(isSelected ? "Selected" : "Use version") {
                     store.selectDXVK(package, for: currentEntry)
                 }.disabled(store.setupBusy || isSelected)
+            } else if !store.entries.isEmpty {
+                Menu("Assign to shotglass") {
+                    ForEach(store.entries) { entry in
+                        Button(entry.shotglass.name) { store.selectDXVK(package, for: entry) }
+                            .disabled(store.setupBusy || uses(package, in: entry))
+                    }
+                }.disabled(store.setupBusy)
             } else {
                 Text("Installed").font(.caption).foregroundStyle(.secondary)
             }
@@ -381,9 +396,15 @@ struct DXVKVersionView: View {
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("Remove DXVK \(package.title)")
-            .help("Remove this DXVK version")
-            .disabled(store.setupBusy || isSelected)
+            .help(isActive
+                  ? "Change the shotglass graphics selection before removing this version."
+                  : "Remove this DXVK version")
+            .disabled(store.setupBusy || isActive)
         }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func uses(_ package: DXVKPackage, in entry: ShotglassEntry) -> Bool {
+        entry.dxvkPackage?.standardizedFileURL == package.folder.standardizedFileURL
     }
 
     private func load(reset: Bool = true) async {
@@ -419,6 +440,7 @@ struct DXMTVersionView: View {
     @State private var nextPage: Int?
     @State private var generation = UUID()
     @State private var uncheckedAsset: EngineAsset?
+    @State private var packagePendingRemoval: DXMTPackage?
 
     private var currentRuntime: Runtime { store.catalog.runtimes.first(where: { $0.id == runtime.id }) ?? runtime }
     private var currentPackagePath: String { currentRuntime.dxmtPackage?.standardizedFileURL.path ?? "" }
@@ -441,6 +463,15 @@ struct DXMTVersionView: View {
                         Button(package.folder.standardizedFileURL.path == currentPackagePath ? "Selected" : "Use version") {
                             store.selectDXMT(package, for: currentRuntime)
                         }.disabled(store.setupBusy || package.folder.standardizedFileURL.path == currentPackagePath)
+                        Button(role: .destructive) { packagePendingRemoval = package } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Remove DXMT \(package.title)")
+                        .help(package.folder.standardizedFileURL.path == currentPackagePath
+                              ? "Select another DXMT version before removing this one."
+                              : "Remove this installed DXMT version.")
+                        .disabled(store.setupBusy || package.folder.standardizedFileURL.path == currentPackagePath)
                     }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
                 }
             }
@@ -501,6 +532,19 @@ struct DXMTVersionView: View {
                 Button("Cancel", role: .cancel) { uncheckedAsset = nil }
             } message: {
                 Text("This archive comes from 3Shain's HTTPS release page, but has no publisher checksum. Spiced-Rum records its local checksum and validates the Wine builtin layout, but cannot authenticate the archive against a publisher checksum. Install only if you trust this release.")
+            }
+            .confirmationDialog("Remove this DXMT version?", isPresented: Binding(get: { packagePendingRemoval != nil }, set: { if !$0 { packagePendingRemoval = nil } }), titleVisibility: .visible) {
+                if let package = packagePendingRemoval {
+                    Button("Remove DXMT version", role: .destructive) {
+                        if store.removeDXMTPackage(package, for: currentRuntime) {
+                            installed = EngineInstaller.installedDXMTPackages(for: currentRuntime)
+                        }
+                        packagePendingRemoval = nil
+                    }
+                }
+                Button("Cancel", role: .cancel) { packagePendingRemoval = nil }
+            } message: {
+                Text("Spiced-Rum removes only this downloaded DXMT version. Engines, shotglasses, and apps stay in place. A version selected by an engine or saved in an engine backup cannot be deleted.")
             }
     }
 

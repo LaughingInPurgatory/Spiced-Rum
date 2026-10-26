@@ -60,7 +60,7 @@ public enum MediaSupport {
         let content = staging.appendingPathComponent("media", isDirectory: true)
         let framework = content.appendingPathComponent("GStreamer.framework")
         try await assemble(from: expanded, framework: framework)
-        try await validateH264(framework: framework, log: content.appendingPathComponent("h264-check.log"))
+        try await validateH264(framework: framework, log: content.appendingPathComponent("h264-check.log"), rosetta: runtime.useRosetta)
         struct Receipt: Encodable { let version: String; let source: URL; let sha256: String }
         try JSONEncoder().encode(Receipt(version: version, source: packageURL, sha256: digest))
             .write(to: content.appendingPathComponent("download-receipt.json"), options: .atomic)
@@ -89,12 +89,12 @@ public enum MediaSupport {
         _ = try await ProcessRunner.capture(URL(fileURLWithPath: "/usr/bin/ditto"), [expanded.appendingPathComponent("Resources").path, framework.appendingPathComponent("Versions/1.0/share/spiced-rum/installer-resources").path])
     }
 
-    static func validateH264(framework: URL, log: URL) async throws {
+    static func validateH264(framework: URL, log: URL, rosetta: Bool) async throws {
         let root = framework.appendingPathComponent("Versions/1.0")
-        let (binary, args) = command(root.appendingPathComponent("bin/gst-launch-1.0"), arguments: ["-q", "videotestsrc", "num-buffers=3", "!", "video/x-raw,format=I420,width=64,height=64,framerate=1/1", "!", "x264enc", "!", "h264parse", "!", "avdec_h264", "!", "fakesink"], libraries: root.appendingPathComponent("lib").path, rosetta: true)
+        let (binary, args) = command(root.appendingPathComponent("bin/gst-launch-1.0"), arguments: ["-q", "videotestsrc", "num-buffers=3", "!", "video/x-raw,format=I420,width=64,height=64,framerate=1/1", "!", "x264enc", "!", "h264parse", "!", "avdec_h264", "!", "fakesink"], libraries: root.appendingPathComponent("lib").path, rosetta: rosetta)
         var env = ProcessInfo.processInfo.environment
         env.merge(environment(framework: framework, registry: log.deletingLastPathComponent().appendingPathComponent("registry-x86_64.bin"))) { _, new in new }
         do { try await ProcessRunner.run(binary, args, environment: env, directory: log.deletingLastPathComponent(), log: log, label: "H.264 encode/decode check", timeout: 240) }
-        catch { throw RumError.message("GStreamer could not decode the H.264 test video under Rosetta.\n\(error.localizedDescription)\n\(String(((try? String(contentsOf: log)) ?? "").suffix(2000)))") }
+        catch { throw RumError.message("GStreamer could not decode the H.264 test video.\n\(error.localizedDescription)\n\(String(((try? String(contentsOf: log)) ?? "").suffix(2000)))") }
     }
 }

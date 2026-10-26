@@ -99,7 +99,7 @@ final class EngineSwitchTests: XCTestCase {
         XCTAssertTrue(try ShotglassEngines.backups(for: changed).isEmpty)
     }
 
-    func testSwitchReplacesDXVKAndRestoresItsPreviousVersion() async throws {
+    func testSwitchUsesEngineDefaultGraphicsAndRestoreRecoversPreviousDXVK() async throws {
         let root = try fixture()
         let old = try engine(in: root, name: "old")
         var replacement = try engine(in: root, name: "replacement")
@@ -112,14 +112,17 @@ final class EngineSwitchTests: XCTestCase {
         }
         let originalDLL = entry.prefix.appendingPathComponent("drive_c/windows/system32/d3d11.dll")
         try Data("Wine builtin".utf8).write(to: originalDLL)
-        try Wine.installDXVK(from: package("old-DXVK"), into: entry.prefix)
+        entry.shotglass.dxvkPackage = try package("old-DXVK")
+        try Wine.installDXVK(from: entry.shotglass.dxvkPackage!, into: entry.prefix)
         entry.shotglass.graphics = .dxvk; try entry.shotglass.save(in: entry.folder)
         replacement.dxvkPackage = try package("replacement-DXVK")
         let switched = try await ShotglassEngines.change(entry, to: replacement)
-        XCTAssertEqual(try String(contentsOf: originalDLL), "replacement-DXVK")
-        XCTAssertEqual(try String(contentsOf: originalDLL.appendingPathExtension("spicedrum-original")), "Wine builtin")
+        XCTAssertEqual(switched.shotglass.graphics, .wine)
+        XCTAssertEqual(try String(contentsOf: originalDLL), "Wine builtin")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: originalDLL.appendingPathExtension("spicedrum-original").path))
         let backup = try XCTUnwrap(ShotglassEngines.backups(for: switched).first)
-        _ = try await ShotglassEngines.restore(backup, to: switched)
+        let restored = try await ShotglassEngines.restore(backup, to: switched)
+        XCTAssertEqual(restored.shotglass.graphics, .dxvk)
         XCTAssertEqual(try String(contentsOf: originalDLL), "old-DXVK")
     }
 

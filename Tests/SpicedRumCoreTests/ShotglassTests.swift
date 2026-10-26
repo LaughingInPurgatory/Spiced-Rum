@@ -672,7 +672,7 @@ final class ShotglassTests: XCTestCase {
         } else {
             _ = try await ProcessRunner.capture(URL(fileURLWithPath: "/usr/bin/ditto"), [settings["SPICED_RUM_TEST_GSTREAMER_FRAMEWORK"]!, framework.path])
         }
-        try await MediaSupport.validateH264(framework: framework, log: media.appendingPathComponent("h264.log"))
+        try await MediaSupport.validateH264(framework: framework, log: media.appendingPathComponent("h264.log"), rosetta: true)
         var engine = Runtime(name: "Wine Staging media test", executable: URL(fileURLWithPath: wine), useRosetta: true, d3dMetal: false, version: "")
         engine.managedRoot = root
         let entry = try ShotglassFiles.create(Shotglass(name: "Media test", runtime: engine, graphics: .wine), parent: root)

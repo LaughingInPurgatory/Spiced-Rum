@@ -30,5 +30,13 @@ struct SpicedRumApp: App {
                 }
             }
         }
+
+        Window("Settings", id: "settings") {
+            SetupView().environmentObject(store)
+                .frame(minWidth: 760, minHeight: 620)
+                .tint(.orange)
+                .preferredColorScheme(.dark)
+        }
+        .defaultSize(width: 980, height: 820)
     }
 }

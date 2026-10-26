@@ -71,6 +71,51 @@ public struct DXMTPackage: Identifiable, Hashable {
     public var id: String { folder.path }
 }
 
+public enum GraphicsRuntimeSource: String, CaseIterable, Identifiable {
+    case mtld3d
+    case vkd3dProton
+    case dxgi
+    case zink
+
+    // VKD3D-Proton and its DXGI bridge remain identifiable only so old
+    // shotglass metadata can be cleaned up. They are no longer offered in UI.
+    public static let allCases: [GraphicsRuntimeSource] = [.mtld3d, .zink]
+
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .mtld3d: return "mtld3d · Direct3D 9"
+        case .vkd3dProton: return "VKD3D-Proton · Direct3D 12"
+        case .dxgi: return "DXVK · DXGI bridge for Direct3D 12"
+        case .zink: return "Mesa Zink · OpenGL"
+        }
+    }
+    public var repository: String {
+        switch self {
+        case .mtld3d: return "athei/mtld3d"
+        case .vkd3dProton: return "HansKristian-Work/vkd3d-proton"
+        case .dxgi: return "doitsujin/dxvk"
+        case .zink: return "pal1000/mesa-dist-win"
+        }
+    }
+    public var description: String {
+        switch self {
+        case .mtld3d: return "A native Metal renderer for Direct3D 9. It needs Wine libraries installed into the engine and an override in this shotglass."
+        case .vkd3dProton: return "Direct3D 12 over Vulkan. It needs a Wine Vulkan bridge and a Vulkan driver supported by this engine."
+        case .dxgi: return "The matching DXGI DLL required by VKD3D-Proton. It is installed only into shotglasses that select the Direct3D 12 backend."
+        case .zink: return "OpenGL over Vulkan. This Mesa Windows package is experimental with Wine and needs a working Vulkan driver."
+        }
+    }
+}
+
+public struct GraphicsRuntimePackage: Identifiable, Hashable {
+    public let source: GraphicsRuntimeSource
+    public let title: String
+    public let folder: URL
+    public let releaseTag: String?
+    public var id: String { folder.path }
+}
+
 public enum DXVKSource: String, CaseIterable, Identifiable {
     case gcenx
     case sarek
@@ -125,6 +170,220 @@ public enum EngineInstaller {
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RumError.message("Cannot load engine releases. GitHub may be unavailable or rate limiting requests. Try again later.") }
         let releases = try JSONDecoder().decode([EngineRelease].self, from: data)
         return releasePage(releaseAssets(from: releases, feed: feed), feed: feed, page: page, link: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Link"))
+    }
+
+    public static func graphicsRuntimeReleases(_ source: GraphicsRuntimeSource, page: Int = 1) async throws -> EngineReleasePage {
+        guard page > 0 else { throw RumError.message("Invalid graphics runtime history page.") }
+        let url = URL(string: "https://api.github.com/repos/\(source.repository)/releases?per_page=12&page=\(page)")!
+        var request = URLRequest(url: url)
+        request.setValue("Spiced-Rum/0.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw RumError.message("Cannot load \(source.title) releases from GitHub. Check the connection and try again.")
+        }
+        let releases = try JSONDecoder().decode([EngineRelease].self, from: data)
+        let assets = releases.flatMap { release in
+            release.assets.map { original -> EngineAsset in
+                var asset = original
+                asset.releaseTag = release.tag_name
+                asset.releaseName = release.name
+                asset.releaseNotes = release.body
+                asset.releaseRepository = source.repository
+                return asset
+            }
+        }.filter { isGraphicsRuntimeAsset($0, source: source) }
+        var seen = Set<Int>()
+        let available = assets.filter { seen.insert($0.id).inserted }.sorted {
+            if $0.created_at != $1.created_at { return ($0.created_at ?? "") > ($1.created_at ?? "") }
+            return $0.name.compare($1.name, options: .numeric) == .orderedDescending
+        }
+        return EngineReleasePage(assets: available, nextPage: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Link")?.contains("rel=\"next\"") == true ? page + 1 : nil)
+    }
+
+    public static func isGraphicsRuntimeAsset(_ asset: EngineAsset, source: GraphicsRuntimeSource) -> Bool {
+        guard asset.browser_download_url.scheme == "https",
+              asset.browser_download_url.host?.lowercased() == "github.com",
+              asset.browser_download_url.path.lowercased().hasPrefix("/\(source.repository.lowercased())/releases/download/"),
+              asset.size > 0, asset.size < 2_000_000_000 else { return false }
+        let name = asset.name.lowercased()
+        switch source {
+        case .mtld3d:
+            return name.range(of: #"^mtld3d(?:-[a-z0-9._-]+)?\.tar\.(?:xz|gz)$"#, options: .regularExpression) != nil
+        case .vkd3dProton:
+            return name.range(of: #"^vkd3d-proton-[a-z0-9._-]+\.tar\.(?:zst|xz|gz)$"#, options: .regularExpression) != nil
+        case .dxgi:
+            guard asset.browser_download_url.path.lowercased().hasPrefix("/doitsujin/dxvk/releases/download/"),
+                  name.range(of: #"^dxvk-[0-9]+(?:\.[0-9]+)*\.tar\.gz$"#, options: .regularExpression) != nil else { return false }
+            let version = name.dropFirst(5).replacingOccurrences(of: ".tar.gz", with: "")
+            let numbers = version.split(separator: ".").compactMap { Int($0) }
+            guard let major = numbers.first else { return false }
+            return major > 2 || (major == 2 && (numbers.dropFirst().first ?? 0) >= 1)
+        case .zink:
+            return name.range(of: #"^mesa3d-[0-9.]+-release-msvc\.7z$"#, options: .regularExpression) != nil
+        }
+    }
+
+    public static func installedGraphicsRuntimePackages(_ source: GraphicsRuntimeSource, in directory: URL) -> [GraphicsRuntimePackage] {
+        guard let folders = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return [] }
+        return folders.compactMap { installationFolder in
+            guard !installationFolder.lastPathComponent.hasPrefix("."),
+                  let values = try? installationFolder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true,
+                  let folder = [installationFolder.appendingPathComponent("package", isDirectory: true), installationFolder]
+                    .first(where: { isGraphicsPackage($0, source: source) }) else { return nil }
+            let receiptURL = installationFolder.appendingPathComponent("download-receipt.json")
+            let receipt = (try? Data(contentsOf: receiptURL)).flatMap { try? JSONDecoder().decode(DXVKPackageReceipt.self, from: $0) }
+            return GraphicsRuntimePackage(source: source, title: receipt?.asset.releaseTag ?? installationFolder.lastPathComponent, folder: folder,
+                                          releaseTag: receipt?.asset.releaseTag)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
+    }
+
+    public static func isGraphicsPackage(_ folder: URL, source: GraphicsRuntimeSource) -> Bool {
+        let fm = FileManager.default
+        switch source {
+        case .mtld3d:
+            let i386 = folder.appendingPathComponent("native/i386-windows/d3d9.dll")
+            let x64 = folder.appendingPathComponent("native/x86_64-windows/d3d9.dll")
+            let arm64 = folder.appendingPathComponent("native/aarch64-windows/d3d9.dll")
+            let hasX64 = fm.isReadableFile(atPath: x64.path)
+                && isWindowsPE(x64, machine: 0x8664)
+                && fm.isReadableFile(atPath: folder.appendingPathComponent("wine/x86_64-windows/mtld3d.dll").path)
+                && fm.isReadableFile(atPath: folder.appendingPathComponent("wine/x86_64-unix/mtld3d.so").path)
+            let hasArm64 = fm.isReadableFile(atPath: arm64.path)
+                && fm.isReadableFile(atPath: folder.appendingPathComponent("wine/aarch64-windows/mtld3d.dll").path)
+                && fm.isReadableFile(atPath: folder.appendingPathComponent("wine/aarch64-unix/mtld3d.so").path)
+            return fm.isReadableFile(atPath: i386.path)
+                && isWindowsPE(i386, machine: 0x014c)
+                && fm.isReadableFile(atPath: folder.appendingPathComponent("wine/i386-windows/mtld3d.dll").path)
+                && (hasX64 || hasArm64)
+        case .vkd3dProton:
+            return vkd3dProtonDLL(folder, named: "d3d12.dll") != nil && vkd3dProtonDLL(folder, named: "d3d12core.dll") != nil
+        case .dxgi:
+            return dxgiDLL(folder) != nil
+        case .zink:
+            return zinkOpenGLDLL(folder, architecture: "x64") != nil && zinkOpenGLDLL(folder, architecture: "x86") != nil
+        }
+    }
+
+    public static func installGraphicsRuntimePackage(_ asset: EngineAsset, source: GraphicsRuntimeSource, in directory: URL,
+                                                      allowUnverified: Bool = false,
+                                                      update: @escaping @Sendable (String, Double?) -> Void) async throws -> URL {
+        guard asset.verifiedDownload || allowUnverified else {
+            throw RumError.message("This graphics release has no publisher SHA-256 checksum. Review its release page before installing it.")
+        }
+        guard isGraphicsRuntimeAsset(asset, source: source) else {
+            throw RumError.message("This release is not a supported \(source.title) package.")
+        }
+        if let tag = asset.releaseTag,
+           let installed = installedGraphicsRuntimePackages(source, in: directory).first(where: { $0.releaseTag == tag }) {
+            return installed.folder
+        }
+
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let staging = directory.appendingPathComponent(".install-\(source.rawValue)-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        update("Downloading \(source.title)…", nil)
+        var request = URLRequest(url: asset.browser_download_url); request.timeoutInterval = 1800
+        let (download, response) = try await URLSession.shared.download(for: request)
+        defer { try? FileManager.default.removeItem(at: download) }
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RumError.message("The graphics runtime download failed. Please retry.") }
+        let archive = staging.appendingPathComponent(asset.name)
+        try FileManager.default.copyItem(at: download, to: archive)
+        guard (try FileManager.default.attributesOfItem(atPath: archive.path)[.size] as? NSNumber)?.int64Value == asset.size else {
+            throw RumError.message("The graphics runtime download is incomplete. Please retry.")
+        }
+        if asset.verifiedDownload, let digest = asset.digest { update("Verifying publisher SHA-256…", nil); try verify(archive, digest: digest) }
+        let archiveDigest = try checksum(archive)
+        let content = staging.appendingPathComponent("content", isDirectory: true)
+        update("Unpacking \(source.title)…", nil)
+        if archive.pathExtension.lowercased() == "7z" || archive.pathExtension.lowercased() == "zst" {
+            let sevenZip = try await Dependencies.ensureSevenZip(log: directory.appendingPathComponent("graphics-install.log"))
+            let listing = try await ProcessRunner.capture(sevenZip, ["l", "-slt", archive.path])
+            let memberPaths = try archiveMemberPathsFrom7ZipListing(listing)
+            if memberPaths.isEmpty {
+                // A .zst file is a compressed stream rather than a container, so 7-Zip
+                // lists its size but no member path. Its validated VKD3D-Proton asset
+                // name determines the extracted .tar name; validate that tar's members
+                // with `unpack` below before extracting them.
+                guard source == .vkd3dProton, archive.pathExtension.lowercased() == "zst" else {
+                    throw RumError.message("Spiced-Rum could not read any archive member paths. The archive was not extracted.")
+                }
+            } else {
+                try validateArchivePaths(memberPaths.joined(separator: "\n"))
+            }
+            try FileManager.default.createDirectory(at: content, withIntermediateDirectories: true)
+            _ = try await ProcessRunner.capture(sevenZip, ["x", "-y", "-o\(content.path)", archive.path])
+        } else {
+            try await unpack(archive, into: content)
+        }
+        if source == .vkd3dProton, findGraphicsPackage(in: content, source: source) == nil,
+           let enumerator = FileManager.default.enumerator(at: content, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]) {
+            let tarArchives = enumerator.compactMap { $0 as? URL }.filter {
+                guard $0.pathExtension.lowercased() == "tar",
+                      let values = try? $0.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return false }
+                return values.isRegularFile == true && values.isSymbolicLink != true
+            }
+            for tar in tarArchives {
+                try await unpack(tar, into: content.appendingPathComponent("expanded-" + UUID().uuidString, isDirectory: true))
+            }
+        }
+        guard let package = findGraphicsPackage(in: content, source: source) else {
+            throw RumError.message("The downloaded archive does not contain the expected macOS/Wine-compatible \(source.title) files. No runtime files were changed.")
+        }
+        let safeTag = String((asset.releaseTag ?? asset.name).map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "-" })
+        let destination = directory.appendingPathComponent("\(source.rawValue)-\(safeTag)", isDirectory: true)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw RumError.message("A folder for this release already exists but could not be validated. Inspect it before removing it, then retry.")
+        }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        do {
+            let installedPackage = destination.appendingPathComponent("package", isDirectory: true)
+            try FileManager.default.moveItem(at: package, to: installedPackage)
+            let receipt = try JSONEncoder().encode(DXVKPackageReceipt(asset: asset, sha256: archiveDigest, publisherChecksumVerified: asset.verifiedDownload))
+            try receipt.write(to: destination.appendingPathComponent("download-receipt.json"), options: .atomic)
+            update("\(source.title) installed", 1)
+            return installedPackage
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+    }
+
+    private static func findGraphicsPackage(in root: URL, source: GraphicsRuntimeSource) -> URL? {
+        if isGraphicsPackage(root, source: source) { return root }
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]) else { return nil }
+        for case let folder as URL in enumerator {
+            guard let values = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true,
+                  isGraphicsPackage(folder, source: source) else { continue }
+            return folder
+        }
+        return nil
+    }
+
+    private static func findWindowsPEFile(named name: String, under root: URL, architectureDirectories: [String], machine: UInt16) -> URL? {
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]) else { return nil }
+        for case let url as URL in enumerator where url.lastPathComponent.caseInsensitiveCompare(name) == .orderedSame {
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                  values.isRegularFile == true, values.isSymbolicLink != true,
+                  architectureDirectories.contains(where: { url.path.lowercased().contains("/\($0)/") }),
+                  isWindowsPE(url, machine: machine) else { continue }
+            return url
+        }
+        return nil
+    }
+
+    public static func zinkOpenGLDLL(_ root: URL, architecture: String) -> URL? {
+        let candidates = architecture == "x64" ? ["x64", "win64", "x86_64"] : ["x86", "win32", "i386"]
+        let machine: UInt16 = architecture == "x64" ? 0x8664 : 0x014c
+        for folder in candidates {
+            let url = root.appendingPathComponent(folder).appendingPathComponent("opengl32.dll")
+            if FileManager.default.isReadableFile(atPath: url.path), isWindowsPE(url, machine: machine) { return url }
+        }
+        let expectedNames = architecture == "x64" ? ["x64", "win64", "x86_64", "amd64"] : ["x86", "win32", "i386", "x32"]
+        return findWindowsPEFile(named: "opengl32.dll", under: root, architectureDirectories: expectedNames, machine: machine)
     }
 
     public static func dxmtReleases(page: Int = 1) async throws -> EngineReleasePage {
@@ -192,6 +451,85 @@ public enum EngineInstaller {
         guard runtime.useRosetta, runtime.managedRoot != nil else { return false }
         let wineRoot = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
         return FileManager.default.fileExists(atPath: wineRoot.appendingPathComponent("lib/libMoltenVK.dylib").path)
+    }
+
+    public static func supportsVKD3DProton(_ runtime: Runtime) -> Bool {
+        let wineRoot = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
+        let windowsLibraries = [
+            wineRoot.appendingPathComponent("lib/wine/x86_64-windows/vulkan-1.dll"),
+            wineRoot.appendingPathComponent("lib/wine/x86_64-windows/winevulkan.dll"),
+            wineRoot.appendingPathComponent("lib/wine/vulkan-1.dll")
+        ]
+        return windowsLibraries.contains(where: { FileManager.default.isReadableFile(atPath: $0.path) })
+            && supportsMoltenVK(runtime)
+    }
+
+    public static func supportsMoltenVK(_ runtime: Runtime) -> Bool {
+        let wineRoot = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
+        let roots = [runtime.managedRoot, wineRoot].compactMap { $0 }
+        let libraries = roots.flatMap { root in [
+            root.appendingPathComponent("lib/libMoltenVK.dylib"),
+            root.appendingPathComponent("lib/MoltenVK.framework/Versions/A/MoltenVK"),
+            root.appendingPathComponent("lib/external/MoltenVK.framework/Versions/A/MoltenVK")
+        ] }
+        return libraries.contains { FileManager.default.isReadableFile(atPath: $0.path) }
+            || moltenVKManifestURL(in: roots) != nil
+    }
+
+    public static func moltenVKManifest(for runtime: Runtime) -> URL? {
+        let wineRoot = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
+        let roots = [runtime.managedRoot, wineRoot].compactMap { $0 }
+        if let existing = moltenVKManifestURL(in: roots) { return existing }
+        guard let library = roots.flatMap({ root in [
+            root.appendingPathComponent("lib/libMoltenVK.dylib"),
+            root.appendingPathComponent("lib/MoltenVK.framework/Versions/A/MoltenVK"),
+            root.appendingPathComponent("lib/external/MoltenVK.framework/Versions/A/MoltenVK")
+        ] }).first(where: { FileManager.default.isReadableFile(atPath: $0.path) }),
+              let writableRoot = runtime.managedRoot else { return nil }
+        let manifest = writableRoot.appendingPathComponent("spiced-rum-moltenvk-icd.json")
+        let content: [String: Any] = [
+            "file_format_version": "1.0.1",
+            "ICD": ["library_path": library.path, "api_version": "1.4.0", "name": "MoltenVK"]
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: content, options: [.prettyPrinted, .sortedKeys]),
+              (try? data.write(to: manifest, options: .atomic)) != nil else { return nil }
+        return manifest
+    }
+
+    private static func moltenVKManifestURL(in roots: [URL]) -> URL? {
+        let names = ["MoltenVK_icd.json", "moltenvk_icd.json", "MoltenVK_icd.json"]
+        for root in roots {
+            let candidates = names.flatMap { name in [
+                root.appendingPathComponent(name),
+                root.appendingPathComponent("lib/\(name)"),
+                root.appendingPathComponent("lib/vulkan/icd.d/\(name)"),
+                root.appendingPathComponent("share/vulkan/icd.d/\(name)")
+            ] }
+            if let found = candidates.first(where: { FileManager.default.isReadableFile(atPath: $0.path) }) { return found }
+        }
+        return nil
+    }
+
+    public static func vkd3dProtonDLL(_ package: URL, named name: String) -> URL? {
+        guard ["d3d12.dll", "d3d12core.dll"].contains(name.lowercased()) else { return nil }
+        return findWindowsPEFile(named: name, under: package, architectureDirectories: ["x64", "x86_64-windows", "x86_64", "amd64"], machine: 0x8664)
+    }
+
+    public static func dxgiDLL(_ package: URL) -> URL? {
+        findWindowsPEFile(named: "dxgi.dll", under: package, architectureDirectories: ["x64", "x86_64", "amd64"], machine: 0x8664)
+    }
+
+    public static func isWindowsPE(_ file: URL, machine: UInt16) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return false }
+        defer { try? handle.close() }
+        guard let dos = try? handle.read(upToCount: 64), dos.count == 64,
+              dos[0] == 0x4d, dos[1] == 0x5a else { return false }
+        let offset = Int(UInt32(dos[0x3c]) | UInt32(dos[0x3d]) << 8 | UInt32(dos[0x3e]) << 16 | UInt32(dos[0x3f]) << 24)
+        guard offset >= 64, offset < 64 * 1024 * 1024,
+              (try? handle.seek(toOffset: UInt64(offset))) != nil,
+              let header = try? handle.read(upToCount: 6), header.count == 6,
+              header[0] == 0x50, header[1] == 0x45, header[2] == 0, header[3] == 0 else { return false }
+        return UInt16(header[4]) | UInt16(header[5]) << 8 == machine
     }
 
     static func isMacOSDXVKAsset(_ asset: EngineAsset) -> Bool {
@@ -530,9 +868,6 @@ public enum EngineInstaller {
             guard FileManager.default.fileExists(atPath: bundle.appendingPathComponent("Contents/Frameworks/libinotify.0.dylib").path) else {
                 throw RumError.message("The support archive does not contain the macOS Wine libraries Barrel needs.")
             }
-            guard FileManager.default.isReadableFile(atPath: bundle.appendingPathComponent("Contents/Frameworks/libvulkan_kosmickrisp.dylib").path) else {
-                throw RumError.message("Barrel Wine's support package is missing its KosmicKrisp Vulkan driver.")
-            }
             try linkTemplateLibraries(template: bundle, engine: engine)
             struct BarrelReceipt: Encodable { let engine: String; let support: EngineAsset; let supportSHA256: String }
             let receipt = try JSONEncoder().encode(BarrelReceipt(engine: "Barrel Wine", support: template, supportSHA256: digest))
@@ -554,7 +889,6 @@ public enum EngineInstaller {
             frameworks="$engine_dir/support/\(templateName).app/Contents/Frameworks"
             export DYLD_FALLBACK_LIBRARY_PATH="$frameworks:$frameworks/GStreamer.framework/Libraries:/usr/lib"
             export GST_PLUGIN_PATH="$frameworks/GStreamer.framework/Libraries/gstreamer-1.0"
-            export VK_DRIVER_FILES="$engine_dir/barrel-vulkan-icd.json"
             export WINEMSYNC=1
             exec "$engine_dir/bin/\(binary)" "$@"
 
@@ -564,22 +898,6 @@ public enum EngineInstaller {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
         }
         return folder.appendingPathComponent("wine")
-    }
-
-    static func writeBarrelVulkanManifest(in engine: URL, templateName: String) throws {
-        let driver = engine.appendingPathComponent("support/\(templateName).app/Contents/Frameworks/libvulkan_kosmickrisp.dylib")
-        guard FileManager.default.isReadableFile(atPath: driver.path) else {
-            throw RumError.message("Barrel Wine's KosmicKrisp Vulkan driver is missing. Reinstall the engine and its support libraries.")
-        }
-        let manifest: [String: Any] = [
-            "file_format_version": "1.0.1",
-            "ICD": [
-                "library_path": driver.path,
-                "api_version": "1.3.0"
-            ]
-        ]
-        let data = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
-        try data.write(to: engine.appendingPathComponent("barrel-vulkan-icd.json"), options: .atomic)
     }
 
     static func preserveFailedSetupLog(in engine: URL, under engines: URL, id: UUID) -> URL? {
@@ -695,11 +1013,36 @@ public enum EngineInstaller {
 
     public static func validateArchivePaths(_ listing: String) throws {
         for path in listing.components(separatedBy: .newlines).filter({ !$0.isEmpty }) {
-            guard !path.hasPrefix("/"), !path.components(separatedBy: "/").contains("..") else { throw RumError.message("The archive contains an unsafe path: \(path)") }
+            let normalized = path.replacingOccurrences(of: "\\", with: "/")
+            let hasWindowsDrive = path.range(of: #"^[A-Za-z]:"#, options: .regularExpression) != nil
+            guard !path.hasPrefix("/"), !path.hasPrefix("\\"), !hasWindowsDrive,
+                  !normalized.components(separatedBy: "/").contains("..") else {
+                throw RumError.message("The archive contains an unsafe path: \(path)")
+            }
         }
     }
 
+    private static func archiveMemberPathsFrom7ZipListing(_ listing: String) throws -> [String] {
+        let lines = listing.components(separatedBy: .newlines)
+        guard let separator = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "----------" }) else {
+            throw RumError.message("Spiced-Rum could not identify the archive member list. The archive was not extracted.")
+        }
+        let paths = lines.dropFirst(separator + 1).compactMap { line -> String? in
+            guard line.hasPrefix("Path = ") else { return nil }
+            return String(line.dropFirst("Path = ".count))
+        }
+        return paths
+    }
+
     public static func unpack(_ archive: URL, into folder: URL) async throws {
+        if archive.pathExtension.lowercased() == "zip" {
+            let listing = try await ProcessRunner.capture(URL(fileURLWithPath: "/usr/bin/unzip"), ["-Z1", archive.path])
+            try validateArchivePaths(listing)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // Apple ditto preserves the signed app bundle's resource forks and extended attributes.
+            _ = try await ProcessRunner.capture(URL(fileURLWithPath: "/usr/bin/ditto"), ["-x", "-k", archive.path, folder.path])
+            return
+        }
         let listing = try await ProcessRunner.capture(URL(fileURLWithPath: "/usr/bin/tar"), ["-tf", archive.path])
         try validateArchivePaths(listing)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -712,9 +1055,10 @@ public enum EngineInstaller {
         let test = try ShotglassFiles.create(Shotglass(name: "Engine validation", runtime: runtime, graphics: .wine), parent: root)
         do {
             let ready = try await Wine.initialize(test, dxvk: nil)
-            try await Wine.execute(runtime: runtime, arguments: ["cmd", "/c", "echo", "SPICED_RUM_ENGINE_OK"], environment: Wine.environment(for: ready), directory: ready.folder, log: ready.log)
+            let marker = "SPICED_RUM_ENGINE_OK"
+            try await Wine.execute(runtime: runtime, arguments: ["cmd", "/c", "echo", marker], environment: Wine.environment(for: ready), directory: ready.folder, log: ready.log)
             let output = try String(contentsOf: ready.log).components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            guard output.contains("SPICED_RUM_ENGINE_OK") else { throw RumError.message("The engine did not run the Windows x64 test command.") }
+            guard output.contains(marker) else { throw RumError.message("The engine did not run its Windows 64-bit test command.") }
             try await Wine.execute(runtime: runtime, arguments: ["wineboot", "--shutdown", "--force", "--kill"], environment: Wine.environment(for: ready), directory: ready.folder, log: ready.log)
             try FileManager.default.removeItem(at: test.folder)
         } catch {
@@ -725,7 +1069,7 @@ public enum EngineInstaller {
                 let (binary, args) = Wine.command(runtime: serverRuntime, arguments: ["-k"])
                 try? await ProcessRunner.run(binary, args, environment: Wine.environment(for: test), directory: test.folder, log: test.log, timeout: 10)
             }
-            throw RumError.message("The engine could not create and run a Windows x64 environment. It has not been marked ready.\n\(error.localizedDescription)\n\(details)")
+            throw RumError.message("The engine could not create and run its Windows x64 environment. It has not been marked ready.\n\(error.localizedDescription)\n\(details)")
         }
     }
 
@@ -804,7 +1148,7 @@ public enum EngineInstaller {
         let (download, response) = try await URLSession.shared.download(for: request)
         defer { try? fm.removeItem(at: download) }
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RumError.message("Engine download failed. Please retry.") }
-        let archive = staging.appendingPathComponent("engine.tar")
+        let archive = staging.appendingPathComponent(asset.name.lowercased().hasSuffix(".zip") ? "engine.zip" : "engine.tar")
         try fm.copyItem(at: download, to: archive)
         let actualSize = (try fm.attributesOfItem(atPath: archive.path)[.size] as? NSNumber)?.int64Value
         guard actualSize == asset.size else { throw RumError.message("Engine download is incomplete. Please retry.") }
@@ -847,11 +1191,9 @@ public enum EngineInstaller {
             runtime.executable = destination.appendingPathComponent(relative)
             runtime.managedRoot = destination
             if feed == .barrelWine {
-                let templateName = (try? FileManager.default.contentsOfDirectory(at: destination.appendingPathComponent("support"), includingPropertiesForKeys: nil))?
-                    .first(where: { $0.pathExtension == "app" && $0.lastPathComponent.hasPrefix("Template-") })?
-                    .deletingPathExtension().lastPathComponent
-                guard let templateName else { throw RumError.message("Barrel Wine's support libraries are missing from the installed engine.") }
-                try writeBarrelVulkanManifest(in: destination, templateName: templateName)
+                let hasTemplate = (try? FileManager.default.contentsOfDirectory(at: destination.appendingPathComponent("support"), includingPropertiesForKeys: nil)
+                    .contains { $0.pathExtension == "app" && $0.lastPathComponent.hasPrefix("Template-") }) == true
+                guard hasTemplate else { throw RumError.message("Barrel Wine's support libraries are missing from the installed engine.") }
             }
             if let evaluation {
                 update("Attaching Apple's GPTK \(evaluation.version) payload to the Wine engine…", nil)

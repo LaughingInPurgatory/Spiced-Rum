@@ -66,6 +66,49 @@ public enum ShotglassEngines {
         return false
     }
 
+    public static func backupReferences(graphicsPackage packageURL: URL,
+                                        source: GraphicsRuntimeSource,
+                                        for entry: ShotglassEntry) throws -> Bool {
+        let root = entry.folder.appendingPathComponent("engine-backups", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: root.path) else { return false }
+        let folders = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+        for folder in folders where UUID(uuidString: folder.lastPathComponent) != nil
+            && FileManager.default.fileExists(atPath: folder.appendingPathComponent("environment.json").path) {
+            let saved: Shotglass
+            do { saved = try Shotglass.load(from: folder) }
+            catch { throw RumError.message("Cannot verify engine backups for \(entry.shotglass.name). Resolve or remove the unreadable backup at \(folder.path) before removing graphics versions.") }
+            guard saved.id == entry.id else {
+                throw RumError.message("An engine backup in \(entry.shotglass.name) has mismatched shotglass metadata. Inspect \(folder.path) before removing graphics versions.")
+            }
+            let savedPackage: URL?
+            switch source {
+            case .mtld3d: savedPackage = saved.mtld3dPackage
+            case .vkd3dProton: savedPackage = saved.vkd3dProtonPackage
+            case .dxgi: savedPackage = saved.dxgiPackage
+            case .zink: savedPackage = saved.zinkPackage
+            }
+            if savedPackage?.standardizedFileURL == packageURL.standardizedFileURL { return true }
+        }
+        return false
+    }
+
+    public static func backupReferences(dxmtPackage packageURL: URL, for entry: ShotglassEntry) throws -> Bool {
+        let root = entry.folder.appendingPathComponent("engine-backups", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: root.path) else { return false }
+        let folders = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+        for folder in folders where UUID(uuidString: folder.lastPathComponent) != nil
+            && FileManager.default.fileExists(atPath: folder.appendingPathComponent("environment.json").path) {
+            let saved: Shotglass
+            do { saved = try Shotglass.load(from: folder) }
+            catch { throw RumError.message("Cannot verify engine backups for \(entry.shotglass.name). Resolve or remove the unreadable backup at \(folder.path) before removing DXMT versions.") }
+            guard saved.id == entry.id else {
+                throw RumError.message("An engine backup in \(entry.shotglass.name) has mismatched shotglass metadata. Inspect \(folder.path) before removing DXMT versions.")
+            }
+            if saved.runtime.dxmtPackage?.standardizedFileURL == packageURL.standardizedFileURL { return true }
+        }
+        return false
+    }
+
     static func snapshot(_ entry: ShotglassEntry) throws -> EngineBackup {
         let fm = FileManager.default
         let values = try entry.prefix.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
@@ -103,6 +146,14 @@ public enum ShotglassEngines {
         var restored = entry
         restored.shotglass.runtime = backup.shotglass.runtime; restored.shotglass.graphics = backup.shotglass.graphics
         restored.shotglass.dxvkPackage = backup.shotglass.dxvkPackage
+        restored.shotglass.direct3D9 = backup.shotglass.direct3D9
+        restored.shotglass.direct3D12 = backup.shotglass.direct3D12
+        restored.shotglass.vulkan = backup.shotglass.vulkan
+        restored.shotglass.openGL = backup.shotglass.openGL
+        restored.shotglass.mtld3dPackage = backup.shotglass.mtld3dPackage
+        restored.shotglass.vkd3dProtonPackage = backup.shotglass.vkd3dProtonPackage
+        restored.shotglass.dxgiPackage = backup.shotglass.dxgiPackage
+        restored.shotglass.zinkPackage = backup.shotglass.zinkPackage
         restored.shotglass.initialized = backup.shotglass.initialized
         do {
             for path in environmentPaths {
@@ -141,6 +192,11 @@ public enum ShotglassEngines {
         var changed = entry
         changed.shotglass.runtime = runtime; changed.shotglass.graphics = runtime.defaultGraphics
         changed.shotglass.dxvkPackage = nil
+        changed.shotglass.direct3D9 = .wine; changed.shotglass.mtld3dPackage = nil
+        changed.shotglass.direct3D12 = .wine; changed.shotglass.vkd3dProtonPackage = nil
+        changed.shotglass.dxgiPackage = nil
+        changed.shotglass.vulkan = .runtimeDefault
+        changed.shotglass.openGL = .wine; changed.shotglass.zinkPackage = nil
         if !entry.shotglass.initialized && !FileManager.default.fileExists(atPath: entry.prefix.path) {
             // No Windows environment exists to migrate or back up yet.
             try changed.shotglass.save(in: changed.folder)
@@ -154,6 +210,9 @@ public enum ShotglassEngines {
         try JSONEncoder().encode(PendingChange(backupID: backup.id, runtime: runtime)).write(to: marker, options: .atomic)
         do {
             if entry.shotglass.graphics == .dxvk { try Wine.removeDXVK(from: entry.prefix) }
+            if entry.shotglass.direct3D9 == .mtld3d { try Wine.removeMTLD3D(from: entry.prefix) }
+            if entry.shotglass.direct3D12 == .vkd3dProton { try Wine.removeVKD3DProton(from: entry.prefix) }
+            if entry.shotglass.openGL == .zink { try Wine.removeZink(from: entry.prefix) }
             status("Updating the Windows environment and graphics…")
             let ready = try await Wine.initialize(changed, dxvk: runtime.dxvkPackage, updating: entry.shotglass.initialized)
             try FileManager.default.removeItem(at: marker)

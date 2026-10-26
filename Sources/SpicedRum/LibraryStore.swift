@@ -28,6 +28,7 @@ final class LibraryStore: ObservableObject {
     @Published var checkingHomebrewGPTK = false
     var support: URL { catalogURL.deletingLastPathComponent() }
     var dxvkDirectory: URL { support.appendingPathComponent("Graphics/DXVK", isDirectory: true) }
+    var graphicsRuntimeDirectory: URL { support.appendingPathComponent("Graphics/Backends", isDirectory: true) }
     var setupLog: URL { support.appendingPathComponent("setup.log") }
     private let catalogURL: URL
     private var attemptedGPTKPaths: Set<String> = []
@@ -347,7 +348,9 @@ final class LibraryStore: ObservableObject {
         Task {
             defer { setupBusy = false }
             do {
-                guard await SystemSetup.rosettaAvailable() else { throw RumError.message("This engine needs Rosetta 2 to translate Intel code on your Mac. Choose Set up Rosetta in Runtimes & setup, review Apple's license, then retry the engine download.") }
+                if !(await SystemSetup.rosettaAvailable()) {
+                    throw RumError.message("This engine needs Rosetta 2 to translate Intel code on your Mac. Choose Set up Rosetta in Runtimes & setup, review Apple's license, then retry the engine download.")
+                }
                 let runtime = try await EngineInstaller.install(asset, feed: feed, into: support.appendingPathComponent("Engines"), allowUnverified: allowUnverified) { message, progress in
                     Task { @MainActor in self.setupMessage = message; self.setupProgress = progress }
                 }
@@ -368,6 +371,158 @@ final class LibraryStore: ObservableObject {
 
     func selectDXVK(_ package: DXVKPackage, for entry: ShotglassEntry) {
         manageDXVK(shotglassID: entry.id) { package.folder }
+    }
+
+    func installedGraphicsRuntimePackages(_ source: GraphicsRuntimeSource) -> [GraphicsRuntimePackage] {
+        EngineInstaller.installedGraphicsRuntimePackages(source, in: graphicsRuntimeDirectory.appendingPathComponent(source.rawValue, isDirectory: true))
+    }
+
+    @discardableResult
+    func removeGraphicsRuntimePackage(_ package: GraphicsRuntimePackage) -> Bool {
+        guard !setupBusy, busy.isEmpty else {
+            error = "Wait for engine or shotglass setup to finish before removing a graphics version."; return false
+        }
+        setupBusy = true
+        defer { setupBusy = false }
+        error = nil
+
+        do {
+            let root = graphicsRuntimeDirectory.appendingPathComponent(package.source.rawValue, isDirectory: true).standardizedFileURL
+            let installFolder = package.folder.lastPathComponent == "package"
+                ? package.folder.deletingLastPathComponent().standardizedFileURL
+                : package.folder.standardizedFileURL
+            guard package.folder.standardizedFileURL == installFolder
+                    || package.folder.standardizedFileURL == installFolder.appendingPathComponent("package", isDirectory: true),
+                  installFolder.deletingLastPathComponent() == root else {
+                throw RumError.message("Spiced-Rum could not verify this graphics package folder. No files were removed.")
+            }
+            let parentValues = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            let folderValues = try installFolder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard parentValues.isDirectory == true, parentValues.isSymbolicLink != true,
+                  folderValues.isDirectory == true, folderValues.isSymbolicLink != true else {
+                throw RumError.message("Spiced-Rum could not verify the managed graphics package folder. No files were removed.")
+            }
+
+            for folder in catalog.shotglassFolders {
+                let shotglass = try Shotglass.load(from: folder)
+                let entry = ShotglassEntry(shotglass: shotglass, folder: folder)
+                if entry.engineChangePending {
+                    throw RumError.message("Restore the pending engine change in \(shotglass.name) before removing graphics versions.")
+                }
+                let selected: URL?
+                switch package.source {
+                case .mtld3d: selected = shotglass.mtld3dPackage
+                case .vkd3dProton: selected = shotglass.vkd3dProtonPackage
+                case .dxgi: selected = shotglass.dxgiPackage
+                case .zink: selected = shotglass.zinkPackage
+                }
+                if selected?.standardizedFileURL == package.folder.standardizedFileURL {
+                    throw RumError.message("\(shotglass.name) still uses this version. Change its graphics backend in the shotglass Graphics panel before removing it.")
+                }
+                if try ShotglassEngines.backupReferences(graphicsPackage: package.folder, source: package.source, for: entry) {
+                    throw RumError.message("An engine backup for \(shotglass.name) still refers to this version. Delete that backup after confirming you no longer need it.")
+                }
+            }
+
+            try FileManager.default.removeItem(at: installFolder)
+            setupMessage = "Removed \(package.title)."
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    func installGraphicsRuntime(_ asset: EngineAsset, source: GraphicsRuntimeSource, for entry: ShotglassEntry? = nil, allowUnverified: Bool = false) {
+        manageGraphicsRuntime(source: source, shotglassID: entry?.id) {
+            let package = try await EngineInstaller.installGraphicsRuntimePackage(
+                asset, source: source,
+                in: self.graphicsRuntimeDirectory.appendingPathComponent(source.rawValue, isDirectory: true),
+                allowUnverified: allowUnverified
+            ) { message, progress in
+                Task { @MainActor in self.setupMessage = message; self.setupProgress = progress }
+            }
+            return package
+        }
+    }
+
+    func selectGraphicsRuntime(_ package: GraphicsRuntimePackage, for entry: ShotglassEntry) {
+        guard installedGraphicsRuntimePackages(package.source).contains(where: { $0.folder.standardizedFileURL == package.folder.standardizedFileURL }) else {
+            error = "This graphics package is no longer installed. Refresh the graphics versions and try again."; return
+        }
+        manageGraphicsRuntime(source: package.source, shotglassID: entry.id) { package.folder }
+    }
+
+    private func manageGraphicsRuntime(source: GraphicsRuntimeSource, shotglassID: UUID?, package: @escaping () async throws -> URL) {
+        guard !setupBusy else { return }
+        if let shotglassID {
+            guard let entry = entries.first(where: { $0.id == shotglassID }) else {
+                error = "This shotglass is no longer available. Refresh the library and try again."; return
+            }
+            guard !busy.contains(shotglassID), !entry.engineChangePending else {
+                error = "Finish the current shotglass operation or restore its engine backup before changing graphics."; return
+            }
+            busy.insert(shotglassID)
+            messages[shotglassID] = "Preparing \(source.title) for this shotglass…"
+        }
+        setupBusy = true; setupMessage = "Preparing \(source.title)…"; setupProgress = nil; error = nil
+        Task {
+            defer {
+                setupBusy = false
+                if let shotglassID { busy.remove(shotglassID) }
+            }
+            do {
+                let packageURL = try await package()
+                if let shotglassID {
+                    guard let entry = entries.first(where: { $0.id == shotglassID }) else {
+                        throw RumError.message("This shotglass was removed while the graphics package was being prepared. The downloaded package remains installed.")
+                    }
+                    if source == .mtld3d {
+                        let conflicts = entries.filter {
+                            $0.id != entry.id && $0.shotglass.runtime.id == entry.shotglass.runtime.id
+                                && $0.shotglass.direct3D9 == .mtld3d
+                                && $0.mtld3dPackage?.standardizedFileURL != packageURL.standardizedFileURL
+                        }
+                        if let conflict = conflicts.first {
+                            throw RumError.message("\(conflict.shotglass.name) uses a different mtld3d version with this shared engine. Change that shotglass to Wine default first; one Wine engine can load one mtld3d Wine bridge version at a time.")
+                        }
+                    }
+                    let updated = try await applyGraphicsRuntime(packageURL, source: source, to: entry)
+                    replaceEntry(updated)
+                setupMessage = "\(source.title) is selected for \(updated.shotglass.name). Other shotglasses were not changed."
+                messages[shotglassID] = "Graphics settings changed. Relaunch Windows apps to use them."
+                } else {
+                    setupMessage = "\(source.title) is installed. Select it separately in each compatible shotglass."
+                }
+            } catch { setupMessage = "Graphics setup needs attention"; self.error = error.localizedDescription }
+        }
+    }
+
+    private func applyGraphicsRuntime(_ package: URL, source: GraphicsRuntimeSource, to entry: ShotglassEntry) async throws -> ShotglassEntry {
+        var d3d9 = entry.shotglass.direct3D9 ?? .wine
+        var d3d9Package = entry.shotglass.mtld3dPackage
+        var d3d12 = entry.shotglass.direct3D12 ?? .wine
+        var d3d12Package = entry.shotglass.vkd3dProtonPackage
+        var dxgiPackage = entry.shotglass.dxgiPackage
+        var openGL = entry.shotglass.openGL ?? .wine
+        var openGLPackage = entry.shotglass.zinkPackage
+        switch source {
+        case .mtld3d: d3d9 = .mtld3d; d3d9Package = package
+        case .vkd3dProton:
+            d3d12Package = package
+            if dxgiPackage == nil { dxgiPackage = installedGraphicsRuntimePackages(.dxgi).first?.folder }
+            d3d12 = dxgiPackage != nil && entry.shotglass.graphics == .wine && EngineInstaller.supportsVKD3DProton(entry.shotglass.runtime) ? .vkd3dProton : .wine
+        case .dxgi:
+            dxgiPackage = package
+            d3d12 = d3d12Package != nil && entry.shotglass.graphics == .wine && EngineInstaller.supportsVKD3DProton(entry.shotglass.runtime) ? .vkd3dProton : d3d12
+        case .zink: openGL = .zink; openGLPackage = package
+        }
+        return try await ShotglassGraphics.changeAPIBackends(
+            entry, direct3D9: d3d9, direct3D9Package: d3d9Package,
+            direct3D12: d3d12, direct3D12Package: d3d12Package, dxgiPackage: dxgiPackage,
+            vulkan: entry.shotglass.vulkan ?? .runtimeDefault,
+            openGL: openGL, openGLPackage: openGLPackage
+        )
     }
 
     @discardableResult
@@ -458,6 +613,60 @@ final class LibraryStore: ObservableObject {
             try await EngineInstaller.installDXMTPackage(asset, for: runtime, allowUnverified: allowUnverified) { message, progress in
                 Task { @MainActor in self.setupMessage = message; self.setupProgress = progress }
             }
+        }
+    }
+
+    @discardableResult
+    func removeDXMTPackage(_ package: DXMTPackage, for runtime: Runtime) -> Bool {
+        guard !setupBusy, busy.isEmpty else {
+            error = "Wait for engine or shotglass setup to finish before removing a DXMT version."; return false
+        }
+        setupBusy = true
+        defer { setupBusy = false }
+        error = nil
+
+        do {
+            guard let registered = catalog.runtimes.first(where: { $0.id == runtime.id }),
+                  registered.managedRoot == runtime.managedRoot,
+                  EngineInstaller.supportsDXMTVersions(registered),
+                  let root = registered.managedRoot?.appendingPathComponent("graphics", isDirectory: true).standardizedFileURL else {
+                throw RumError.message("This managed engine is no longer available. Refresh Runtimes & setup before removing DXMT versions.")
+            }
+            let packageFolder = package.folder.standardizedFileURL
+            let installFolder = packageFolder.deletingLastPathComponent()
+            guard packageFolder == installFolder.appendingPathComponent("package", isDirectory: true),
+                  installFolder.deletingLastPathComponent() == root,
+                  installFolder.lastPathComponent.hasPrefix("DXMT-") else {
+                throw RumError.message("Spiced-Rum could not verify this DXMT package folder. No files were removed.")
+            }
+            let rootValues = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            let folderValues = try installFolder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard rootValues.isDirectory == true, rootValues.isSymbolicLink != true,
+                  folderValues.isDirectory == true, folderValues.isSymbolicLink != true else {
+                throw RumError.message("Spiced-Rum could not verify the managed DXMT folder. No files were removed.")
+            }
+            if registered.dxmtPackage?.standardizedFileURL == packageFolder {
+                throw RumError.message("This DXMT version is selected for \(registered.name). Select another version before deleting it.")
+            }
+            for folder in catalog.shotglassFolders {
+                let shotglass = try Shotglass.load(from: folder)
+                let entry = ShotglassEntry(shotglass: shotglass, folder: folder)
+                if entry.engineChangePending {
+                    throw RumError.message("Restore the pending engine change in \(shotglass.name) before removing DXMT versions.")
+                }
+                if shotglass.runtime.dxmtPackage?.standardizedFileURL == packageFolder {
+                    throw RumError.message("\(shotglass.name) still references this DXMT version. Select another engine version before deleting it.")
+                }
+                if try ShotglassEngines.backupReferences(dxmtPackage: packageFolder, for: entry) {
+                    throw RumError.message("An engine backup for \(shotglass.name) still refers to this DXMT version. Delete that backup after confirming you no longer need it.")
+                }
+            }
+            try FileManager.default.removeItem(at: installFolder)
+            setupMessage = "Removed DXMT \(package.title) from \(registered.name)."
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
         }
     }
 
@@ -955,9 +1164,28 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    func changeGraphics(_ entry: ShotglassEntry, to graphics: Graphics) {
-        perform(entry, message: "Switching graphics and stopping this shotglass's Windows processes…", successMessage: "Graphics changed to \(graphics.rawValue).") {
-            let updated = try await ShotglassGraphics.change(entry, to: graphics)
+    func changeGraphicsSettings(_ entry: ShotglassEntry,
+                                graphics: Graphics, dxvkPackage: URL?,
+                                direct3D9: Direct3D9Backend, direct3D9Package: URL?,
+                                direct3D12: Direct3D12Backend, direct3D12Package: URL?, dxgiPackage: URL?,
+                                vulkan: VulkanBackend, openGL: OpenGLBackend, openGLPackage: URL?) {
+        perform(entry, message: "Updating graphics and stopping this shotglass's Windows processes…", successMessage: "Graphics options saved.") {
+            if direct3D9 == .mtld3d, let direct3D9Package {
+                let conflicts = self.entries.filter {
+                    $0.id != entry.id && $0.shotglass.runtime.id == entry.shotglass.runtime.id
+                        && $0.shotglass.direct3D9 == .mtld3d
+                        && $0.mtld3dPackage?.standardizedFileURL != direct3D9Package.standardizedFileURL
+                }
+                if let conflict = conflicts.first {
+                    throw RumError.message("\(conflict.shotglass.name) uses a different mtld3d Wine bridge with this shared engine. Change it to Wine default first.")
+                }
+            }
+            let updated = try await ShotglassGraphics.changeSettings(
+                entry, graphics: graphics, dxvkPackage: dxvkPackage,
+                direct3D9: direct3D9, direct3D9Package: direct3D9Package,
+                direct3D12: direct3D12, direct3D12Package: direct3D12Package, dxgiPackage: dxgiPackage,
+                vulkan: vulkan, openGL: openGL, openGLPackage: openGLPackage
+            )
             await MainActor.run { self.replaceEntry(updated) }
         }
     }

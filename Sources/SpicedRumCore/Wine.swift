@@ -16,7 +16,7 @@ public enum Wine {
     public static func environment(for entry: ShotglassEntry) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         // Do not inherit another Wine session's prefix or renderer overrides.
-        for key in ["WINEPREFIX", "WINEARCH", "WINEDLLOVERRIDES", "WINESERVER", "WINELOADER", "WINEDLLPATH_PREPEND", "WINEMSYNC", "DXVK_CONFIG_FILE", "DXVK_LOG_PATH"] { env.removeValue(forKey: key) }
+        for key in ["WINEPREFIX", "WINEARCH", "WINEDLLOVERRIDES", "WINESERVER", "WINELOADER", "WINEDLLPATH_PREPEND", "WINEMSYNC", "DXVK_CONFIG_FILE", "DXVK_LOG_PATH", "GRAPHICS_BACKEND", "VK_DRIVER_FILES", "VK_ICD_FILENAMES", "GALLIUM_DRIVER"] { env.removeValue(forKey: key) }
         env["WINEPREFIX"] = entry.prefix.path
         let runtime = entry.shotglass.runtime
         let engine = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
@@ -45,6 +45,19 @@ public enum Wine {
             if let package = runtime.dxmtPackage {
                 env["WINEDLLPATH_PREPEND"] = package.path
                 env["WINEMSYNC"] = "1"
+            }
+        }
+        var overrides = [env["WINEDLLOVERRIDES"]].compactMap { $0 }.filter { !$0.isEmpty }
+        if entry.shotglass.direct3D9 == .mtld3d { overrides.append("d3d9=n,b") }
+        if entry.shotglass.direct3D12 == .vkd3dProton { overrides.append("dxgi,d3d12,d3d12core=n,b") }
+        if entry.shotglass.openGL == .zink { overrides.append("opengl32=n,b") }
+        if !overrides.isEmpty { env["WINEDLLOVERRIDES"] = overrides.joined(separator: ";") }
+        if entry.shotglass.openGL == .zink { env["GALLIUM_DRIVER"] = "zink" }
+        switch entry.shotglass.vulkan {
+        case .legacyKosmicKrisp, .moltenVK, .runtimeDefault, nil:
+            if let manifest = EngineInstaller.moltenVKManifest(for: runtime) {
+                env["VK_DRIVER_FILES"] = manifest.path
+                env["VK_ICD_FILENAMES"] = manifest.path
             }
         }
         return env
@@ -90,23 +103,12 @@ public enum Wine {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: folder) }
         // Probe has no access to an existing prefix. A runtime is still external code chosen by the user.
-        let process = Process()
         let (binary, args) = command(runtime: runtime, arguments: ["--version"])
-        process.executableURL = binary; process.arguments = args
-        process.environment = ["PATH": runtime.executable.deletingLastPathComponent().path + ":/usr/bin:/bin", "HOME": NSHomeDirectory(), "WINEPREFIX": folder.appendingPathComponent("prefix").path]
-        let log = folder.appendingPathComponent("probe.log")
-        FileManager.default.createFile(atPath: log.path, contents: nil)
-        let output = try FileHandle(forWritingTo: log)
-        defer { try? output.close() }
-        process.standardOutput = output; process.standardError = output
-        let status: Int32 = try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
-            do { try process.run() } catch { continuation.resume(throwing: error); return }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 60) { if process.isRunning { process.terminate() } }
-        }
-        let version = (try String(contentsOf: log, encoding: .utf8)).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard status == 0, version.lowercased().contains("wine"), version.count < 2000 else {
-            throw RumError.message("Wine did not report a valid version. Check that this is a complete macOS runtime and that Rosetta is installed for Intel runtimes.\n\(String(version.prefix(500)))")
+        let environment = ["PATH": runtime.executable.deletingLastPathComponent().path + ":/usr/bin:/bin", "HOME": NSHomeDirectory(), "WINEPREFIX": folder.appendingPathComponent("prefix").path]
+        let version = try await ProcessRunner.capture(binary, args, environment: environment, timeout: 60).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard version.lowercased().contains("wine"), version.count < 2000 else {
+            let output = version.isEmpty ? "(The process produced no output.)" : String(version.prefix(1500))
+            throw RumError.message("Wine --version did not report a valid version. Check that this is a complete macOS runtime and that its required translation support is available.\n\(output)")
         }
         return version
     }
@@ -120,8 +122,32 @@ public enum Wine {
         }
         if entry.shotglass.graphics == .dxmt, let package = entry.shotglass.runtime.dxmtPackage { try validateDXMT(package) }
         if entry.shotglass.graphics == .dxvk { try validateDXVK(dxvk) }
+        if entry.shotglass.direct3D9 == .mtld3d { try validateMTLD3D(entry.mtld3dPackage); try validateMTLD3DRuntime(entry.shotglass.runtime, package: entry.mtld3dPackage) }
+        if entry.shotglass.direct3D12 == .vkd3dProton {
+            try validateVKD3DProton(entry.vkd3dProtonPackage)
+            try validateDXGI(entry.dxgiPackage)
+            guard EngineInstaller.supportsVKD3DProton(entry.shotglass.runtime) else {
+                throw RumError.message("VKD3D-Proton needs an engine with a working Wine Vulkan bridge and Vulkan driver.")
+            }
+            guard entry.shotglass.graphics == .wine else {
+                throw RumError.message("VKD3D-Proton requires Wine default graphics. Change away from DXVK, DXMT, or D3DMetal first.")
+            }
+        }
+        if entry.shotglass.openGL == .zink {
+            try validateZink(entry.zinkPackage)
+            guard EngineInstaller.supportsMoltenVK(entry.shotglass.runtime) else {
+                throw RumError.message("Zink needs a Vulkan driver included with the selected engine.")
+            }
+        }
+        if (entry.shotglass.vulkan == .moltenVK || entry.shotglass.vulkan == .legacyKosmicKrisp)
+            && !EngineInstaller.supportsMoltenVK(entry.shotglass.runtime) {
+            throw RumError.message("This engine does not include a MoltenVK driver manifest.")
+        }
         // Renderer DLLs are installed only after Wine creates its original prefix.
-        var plain = entry; plain.shotglass.graphics = .wine
+        var plain = entry
+        plain.shotglass.graphics = .wine
+        plain.shotglass.direct3D9 = .wine; plain.shotglass.direct3D12 = .wine
+        plain.shotglass.vulkan = .runtimeDefault; plain.shotglass.openGL = .wine
         try await execute(runtime: entry.shotglass.runtime, arguments: ["wineboot", updating ? "--update" : "--init"], environment: environment(for: plain), directory: entry.folder, log: entry.log, timeout: 180)
         // wineboot can return before setup children finish and the registry is flushed.
         // Wait on this prefix's server, rather than checking half-written files.
@@ -139,6 +165,14 @@ public enum Wine {
         guard registry.contains("#arch=win64") else { throw RumError.message("This runtime created a 32-bit prefix. Spiced-Rum requires a Windows x64-capable macOS engine.") }
         if entry.shotglass.graphics == .dxvk, let dxvk { try installDXVK(from: dxvk, into: entry.prefix) }
         if entry.shotglass.graphics == .dxmt, let package = entry.shotglass.runtime.dxmtPackage { try installDXMT(from: package, into: entry.prefix) }
+        if entry.shotglass.direct3D9 == .mtld3d, let package = entry.mtld3dPackage {
+            try installMTLD3DRuntime(from: package, for: entry.shotglass.runtime)
+            try installMTLD3D(from: package, into: entry.prefix, runtime: entry.shotglass.runtime)
+        }
+        if entry.shotglass.direct3D12 == .vkd3dProton, let package = entry.vkd3dProtonPackage, let dxgi = entry.dxgiPackage {
+            try installVKD3DProton(from: package, dxgi: dxgi, into: entry.prefix)
+        }
+        if entry.shotglass.openGL == .zink, let package = entry.zinkPackage { try installZink(from: package, into: entry.prefix) }
         var ready = entry; ready.shotglass.initialized = true
         try ready.shotglass.save(in: ready.folder)
         return ready
@@ -179,6 +213,182 @@ public enum Wine {
             if (try? fm.attributesOfItem(atPath: file.path)) != nil { try fm.removeItem(at: file) }
             if (try? fm.attributesOfItem(atPath: backup.path)) != nil { try fm.moveItem(at: backup, to: file) }
         }
+    }
+
+    public static func validateMTLD3D(_ folder: URL?) throws {
+        guard let folder, EngineInstaller.isGraphicsPackage(folder, source: .mtld3d) else {
+            throw RumError.message("Install a complete mtld3d release from Runtimes & setup first.")
+        }
+    }
+
+    public static func validateMTLD3DRuntime(_ runtime: Runtime, package: URL?) throws {
+        guard let package, runtime.managedRoot != nil else {
+            throw RumError.message("mtld3d needs an installed package and a Spiced-Rum-managed Wine engine.")
+        }
+        let wineRoot = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
+        guard FileManager.default.fileExists(atPath: wineRoot.appendingPathComponent("lib/wine", isDirectory: true).path) else {
+            throw RumError.message("This engine does not include the Wine library tree needed by mtld3d.")
+        }
+        if runtime.useRosetta {
+            guard FileManager.default.isReadableFile(atPath: package.appendingPathComponent("wine/x86_64-unix/mtld3d.so").path),
+                  FileManager.default.isReadableFile(atPath: package.appendingPathComponent("wine/x86_64-windows/mtld3d.dll").path) else {
+                throw RumError.message("This mtld3d release does not include the x86_64 Wine bridge required by this engine.")
+            }
+        } else {
+            let os = ProcessInfo.processInfo.operatingSystemVersion
+            guard os.majorVersion > 26 || (os.majorVersion == 26 && os.minorVersion >= 4) else {
+                throw RumError.message("mtld3d's arm64 Wine bridge requires macOS 26.4 or later. On an older macOS version, use an x86_64 Wine engine through Rosetta 2.")
+            }
+            guard FileManager.default.isReadableFile(atPath: package.appendingPathComponent("wine/aarch64-unix/mtld3d.so").path),
+                  FileManager.default.isReadableFile(atPath: package.appendingPathComponent("wine/aarch64-windows/mtld3d.dll").path)
+                    || FileManager.default.isReadableFile(atPath: package.appendingPathComponent("wine/x86_64-windows/mtld3d.dll").path) else {
+                throw RumError.message("This mtld3d release does not include the arm64 Unix bridge and 64-bit Wine files required by this engine.")
+            }
+        }
+    }
+
+    public static func validateVKD3DProton(_ folder: URL?) throws {
+        guard let folder, EngineInstaller.isGraphicsPackage(folder, source: .vkd3dProton),
+              EngineInstaller.vkd3dProtonDLL(folder, named: "d3d12.dll") != nil,
+              EngineInstaller.vkd3dProtonDLL(folder, named: "d3d12core.dll") != nil else {
+            throw RumError.message("Install a VKD3D-Proton release containing the 64-bit d3d12.dll and d3d12core.dll first.")
+        }
+    }
+
+    public static func validateDXGI(_ folder: URL?) throws {
+        guard let folder, EngineInstaller.isGraphicsPackage(folder, source: .dxgi), EngineInstaller.dxgiDLL(folder) != nil else {
+            throw RumError.message("Install a DXVK release containing the 64-bit DXGI DLL required by VKD3D-Proton first.")
+        }
+    }
+
+    public static func validateZink(_ folder: URL?) throws {
+        guard let folder, EngineInstaller.isGraphicsPackage(folder, source: .zink) else {
+            throw RumError.message("Install a Mesa Zink package containing both 32-bit and 64-bit OpenGL DLLs first.")
+        }
+    }
+
+    public static func installMTLD3DRuntime(from package: URL, for runtime: Runtime) throws {
+        try validateMTLD3D(package); try validateMTLD3DRuntime(runtime, package: package)
+        let wineRoot = runtime.executable.deletingLastPathComponent().deletingLastPathComponent()
+        let defaultTree = wineRoot.appendingPathComponent("lib/wine", isDirectory: true)
+        let specializedTree = defaultTree.appendingPathComponent("d3d9/mtld3d", isDirectory: true)
+        let tree = FileManager.default.fileExists(atPath: specializedTree.path) ? specializedTree : defaultTree
+        let hostArch = runtime.useRosetta ? "x86_64" : "aarch64"
+        let windowsSource = !runtime.useRosetta && !FileManager.default.fileExists(atPath: package.appendingPathComponent("wine/aarch64-windows/mtld3d.dll").path) ? "x86_64" : hostArch
+        let mappings = [
+            ("wine/i386-windows/mtld3d.dll", "i386-windows/mtld3d.dll"),
+            ("wine/\(windowsSource)-windows/mtld3d.dll", "\(hostArch)-windows/mtld3d.dll"),
+            ("wine/\(hostArch)-unix/mtld3d.so", "\(hostArch)-unix/mtld3d.so")
+        ]
+        for (source, destination) in mappings {
+            let input = package.appendingPathComponent(source)
+            guard FileManager.default.isReadableFile(atPath: input.path) else {
+                throw RumError.message("This mtld3d release does not include the \(hostArch) Wine bridge required by this engine.")
+            }
+            try installEngineFile(input, at: tree.appendingPathComponent(destination))
+        }
+    }
+
+    public static func installMTLD3D(from package: URL, into prefix: URL, runtime: Runtime) throws {
+        try installMTLD3DRuntime(from: package, for: runtime)
+        let hostArch = runtime.useRosetta ? "x86_64" : "aarch64"
+        for (architecture, target) in [(hostArch, "system32"), ("i386", "syswow64")] {
+            var dll = package.appendingPathComponent("native/\(architecture)-windows/d3d9.dll")
+            if !FileManager.default.isReadableFile(atPath: dll.path), architecture == "aarch64" {
+                dll = package.appendingPathComponent("native/x86_64-windows/d3d9.dll")
+            }
+            guard FileManager.default.isReadableFile(atPath: dll.path) else {
+                throw RumError.message("mtld3d is missing its \(architecture) Direct3D 9 DLL.")
+            }
+            try installPrefixDLL(dll, into: prefix, directory: target, name: "d3d9.dll")
+            var markerName = target == "system32" && hostArch == "aarch64" ? "system32-arm64" : target
+            let marker = package.appendingPathComponent("prefix-markers/\(markerName)/mtld3d.dll")
+            if FileManager.default.isReadableFile(atPath: marker.path) {
+                try installPrefixDLL(marker, into: prefix, directory: target, name: "mtld3d.dll")
+            } else if target == "system32" && hostArch == "aarch64" {
+                markerName = "system32"
+                let amd64Marker = package.appendingPathComponent("prefix-markers/\(markerName)/mtld3d.dll")
+                if FileManager.default.isReadableFile(atPath: amd64Marker.path) {
+                    try installPrefixDLL(amd64Marker, into: prefix, directory: target, name: "mtld3d.dll")
+                }
+            }
+        }
+    }
+
+    public static func removeMTLD3D(from prefix: URL) throws {
+        for target in ["system32", "syswow64"] {
+            removePrefixDLL(from: prefix, directory: target, name: "d3d9.dll")
+            removePrefixDLL(from: prefix, directory: target, name: "mtld3d.dll")
+        }
+    }
+
+    public static func installVKD3DProton(from package: URL, dxgi: URL, into prefix: URL) throws {
+        try validateVKD3DProton(package); try validateDXGI(dxgi)
+        guard let dxgiDLL = EngineInstaller.dxgiDLL(dxgi) else { throw RumError.message("DXVK's 64-bit dxgi.dll is missing.") }
+        try installPrefixDLL(dxgiDLL, into: prefix, directory: "system32", name: "dxgi.dll")
+        for name in ["d3d12.dll", "d3d12core.dll"] {
+            guard let source = EngineInstaller.vkd3dProtonDLL(package, named: name) else {
+                throw RumError.message("VKD3D-Proton is missing its 64-bit \(name).")
+            }
+            try installPrefixDLL(source, into: prefix, directory: "system32", name: name)
+        }
+    }
+
+    public static func removeVKD3DProton(from prefix: URL) throws {
+        for name in ["d3d12.dll", "d3d12core.dll"] { removePrefixDLL(from: prefix, directory: "system32", name: name) }
+        removePrefixDLL(from: prefix, directory: "system32", name: "dxgi.dll")
+    }
+
+    public static func installZink(from package: URL, into prefix: URL) throws {
+        try validateZink(package)
+        for (architecture, target) in [("x64", "system32"), ("x86", "syswow64")] {
+            guard let opengl = EngineInstaller.zinkOpenGLDLL(package, architecture: architecture) else {
+                throw RumError.message("Mesa Zink is missing its \(architecture) opengl32.dll.")
+            }
+            let architectureRoot = opengl.deletingLastPathComponent()
+            for name in ["opengl32.dll", "libgallium_wgl.dll", "libglapi.dll", "dxil.dll"] {
+                let source = architectureRoot.appendingPathComponent(name)
+                guard FileManager.default.isReadableFile(atPath: source.path) else { continue }
+                try installPrefixDLL(source, into: prefix, directory: target, name: name)
+            }
+        }
+    }
+
+    public static func removeZink(from prefix: URL) throws {
+        for target in ["system32", "syswow64"] {
+            for name in ["opengl32.dll", "libgallium_wgl.dll", "libglapi.dll", "dxil.dll"] { removePrefixDLL(from: prefix, directory: target, name: name) }
+        }
+    }
+
+    private static func installEngineFile(_ source: URL, at destination: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let backup = destination.appendingPathExtension("spicedrum-original")
+        if (try? fm.attributesOfItem(atPath: destination.path)) != nil {
+            if (try? fm.attributesOfItem(atPath: backup.path)) == nil { try fm.moveItem(at: destination, to: backup) }
+            else { try fm.removeItem(at: destination) }
+        }
+        try fm.copyItem(at: source, to: destination)
+    }
+
+    private static func installPrefixDLL(_ source: URL, into prefix: URL, directory: String, name: String) throws {
+        let fm = FileManager.default
+        let destination = prefix.appendingPathComponent("drive_c/windows/\(directory)/\(name)")
+        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let backup = destination.appendingPathExtension("spicedrum-original")
+        if (try? fm.attributesOfItem(atPath: destination.path)) != nil {
+            if (try? fm.attributesOfItem(atPath: backup.path)) == nil { try fm.moveItem(at: destination, to: backup) }
+            else { try fm.removeItem(at: destination) }
+        }
+        try fm.copyItem(at: source, to: destination)
+    }
+
+    private static func removePrefixDLL(from prefix: URL, directory: String, name: String) {
+        let fm = FileManager.default
+        let destination = prefix.appendingPathComponent("drive_c/windows/\(directory)/\(name)")
+        let backup = destination.appendingPathExtension("spicedrum-original")
+        if (try? fm.attributesOfItem(atPath: destination.path)) != nil { try? fm.removeItem(at: destination) }
+        if (try? fm.attributesOfItem(atPath: backup.path)) != nil { try? fm.moveItem(at: backup, to: destination) }
     }
 
     public static func validateDXVK(_ folder: URL?) throws {
