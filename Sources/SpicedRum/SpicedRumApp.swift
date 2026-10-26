@@ -14,7 +14,7 @@ struct SpicedRumApp: App {
         WindowGroup("Spiced-Rum") {
             LibraryView().environmentObject(store)
                 .frame(minWidth: 960, minHeight: 660)
-                .tint(.orange)
+                .tint(RumTheme.accent)
                 .preferredColorScheme(.dark)
                 .onAppear { NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true) }
         }
@@ -34,7 +34,7 @@ struct SpicedRumApp: App {
         Window("Settings", id: "settings") {
             SetupView().environmentObject(store)
                 .frame(minWidth: 760, minHeight: 620)
-                .tint(.orange)
+                .tint(RumTheme.accent)
                 .preferredColorScheme(.dark)
         }
         .defaultSize(width: 980, height: 820)

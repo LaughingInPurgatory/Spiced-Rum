@@ -230,7 +230,7 @@ struct GraphicsRuntimeVersionView: View {
                                       ? "Change the shotglass graphics selection before removing this version."
                                       : "Remove this installed version.")
                                 .disabled(store.setupBusy || store.entries.contains(where: { uses(package, in: $0) }))
-                            }.padding(9).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                            }.padding(9).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                         }
                     }
                 }.frame(maxHeight: 170)
@@ -258,7 +258,7 @@ struct GraphicsRuntimeVersionView: View {
                                         else { uncheckedAsset = asset }
                                     }.disabled(store.setupBusy)
                                 }
-                            }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                            }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                         }
                         if loading { ProgressView("Loading older releases…") }
                         if nextPage != nil { Button("Load older releases") { Task { await load(reset: false) } }.disabled(loading || store.setupBusy) }

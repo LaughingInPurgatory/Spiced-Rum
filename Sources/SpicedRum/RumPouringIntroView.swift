@@ -26,7 +26,7 @@ struct RumPouringIntroView: View {
             let pourEnd = CGPoint(x: glassCenter.x, y: min(glassBottom, risingSurface))
             ZStack {
                 RadialGradient(
-                    colors: [Color(red: 0.20, green: 0.13, blue: 0.09), Color(red: 0.075, green: 0.079, blue: 0.087)],
+                    colors: [RumTheme.surfaceMuted, RumTheme.background],
                     center: UnitPoint(x: 0.58, y: 0.47),
                     startRadius: 20,
                     endRadius: max(size.width, size.height) * 0.78

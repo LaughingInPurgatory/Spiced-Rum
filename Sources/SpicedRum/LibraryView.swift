@@ -2,8 +2,6 @@ import SwiftUI
 import AppKit
 import SpicedRumCore
 
-private let amber = Color(red: 0.94, green: 0.64, blue: 0.29)
-
 private struct SidebarActionButton: View {
     let title: String
     let symbol: String
@@ -18,6 +16,7 @@ private struct SidebarActionButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .foregroundStyle(RumTheme.accent)
         .disabled(disabled)
         .help(title)
         .accessibilityLabel(title)
@@ -30,8 +29,8 @@ private struct SidebarActionButton: View {
                     .fixedSize()
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.white.opacity(0.12)))
+                    .background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.10)))
                     .offset(y: -30)
                     .allowsHitTesting(false)
                     .transition(.opacity)
@@ -58,9 +57,9 @@ private struct ShotglassEditRequest: Identifiable {
 struct PrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.fontWeight(.medium).foregroundStyle(.black)
+        configuration.label.fontWeight(.medium).foregroundStyle(RumTheme.onAccent)
             .padding(.horizontal, 14).padding(.vertical, 9)
-            .background(amber.opacity(configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 8))
+            .background(RumTheme.accent.opacity(configuration.isPressed ? 0.82 : 1), in: Capsule())
             .opacity(enabled ? 1 : 0.45)
     }
 }
@@ -157,7 +156,7 @@ struct LibraryView: View {
                                     .buttonStyle(.plain)
 
                                     Circle()
-                                        .fill(entry.shotglass.initialized ? .green.opacity(0.8) : amber)
+                                        .fill(entry.shotglass.initialized ? .green.opacity(0.8) : .orange)
                                         .frame(width: 8, height: 8)
                                         .help(entry.shotglass.initialized ? "Ready" : "Setup needed")
                                         .accessibilityLabel(entry.shotglass.initialized ? "Ready" : "Setup needed")
@@ -175,7 +174,7 @@ struct LibraryView: View {
                                     .disabled(store.busy.contains(entry.id))
                                 }
                                 .padding(.horizontal, 8).padding(.vertical, 6)
-                                .background(store.selection == entry.id ? amber.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                                .background(store.selection == entry.id ? RumTheme.selection : .clear, in: RoundedRectangle(cornerRadius: 14))
                                 .contextMenu {
                                     Button("Rename…", systemImage: "pencil") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .rename) }
                                         .disabled(store.busy.contains(entry.id))
@@ -191,7 +190,7 @@ struct LibraryView: View {
                     }.frame(maxHeight: .infinity)
                 }.padding(.horizontal, 10)
                 Spacer()
-            }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(red: 0.075, green: 0.079, blue: 0.087))
+            }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity).background(RumTheme.background)
             .navigationSplitViewColumnWidth(270)
         } detail: {
             ZStack {
@@ -201,7 +200,7 @@ struct LibraryView: View {
                     } else {
                         shotglassSelectionEmptyState
                     }
-                }.background(Color(red: 0.105, green: 0.109, blue: 0.12))
+                }.background(RumTheme.content)
 
                 if showStartupIntro && !reduceMotion {
                     RumPouringIntroView {
@@ -312,11 +311,11 @@ struct ShotglassDetail: View {
                 if entry.shotglass.programs.isEmpty {
                     Text("Run a Windows installer, then add its installed .exe here. Heroic setup files are extracted directly to bypass its unreliable running-app check.")
                         .font(.callout).foregroundStyle(.secondary).padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 9))
+                        .background(RumTheme.surfaceMuted, in: RoundedRectangle(cornerRadius: 12))
                 }
                 ForEach(entry.shotglass.programs) { program in
                         HStack(spacing: 12) {
-                        Image(systemName: "app.dashed").font(.title2).foregroundStyle(amber)
+                        Image(systemName: "app.dashed").font(.title2).foregroundStyle(RumTheme.accent)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(program.name).fontWeight(.medium)
                             Text(program.path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -370,7 +369,7 @@ struct ShotglassDetail: View {
                             }
                             Button("Remove shortcut") { store.removeProgram(program, from: entry) }
                         } label: { Image(systemName: "ellipsis") }.fixedSize()
-                    }.padding(12).background(.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 9))
+                    }.padding(12).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
             Text(entry.folder.path).font(.caption).foregroundStyle(.tertiary).textSelection(.enabled)

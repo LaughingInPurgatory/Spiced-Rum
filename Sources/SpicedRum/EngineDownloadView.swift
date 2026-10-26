@@ -63,7 +63,7 @@ struct EngineDownloadView: View {
                                     if asset.verifiedDownload { store.installEngine(asset, feed: feed) }
                                     else { legacyAsset = asset }
                                 }.disabled(store.setupBusy || asset.requiresSikarugirLauncher || (feed == .whisky && ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 15))
-                            }.padding(12).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
+                            }.padding(12).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                         }
                         if loading { ProgressView("Loading older releases…") }
                         if nextPage != nil {
@@ -360,7 +360,7 @@ struct DXVKVersionView: View {
                     else { uncheckedAsset = asset }
                 }.disabled(store.setupBusy)
             }
-        }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+        }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
     }
 
     @ViewBuilder
@@ -400,7 +400,7 @@ struct DXVKVersionView: View {
                   ? "Change the shotglass graphics selection before removing this version."
                   : "Remove this DXVK version")
             .disabled(store.setupBusy || isActive)
-        }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+        }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func uses(_ package: DXVKPackage, in entry: ShotglassEntry) -> Bool {
@@ -472,7 +472,7 @@ struct DXMTVersionView: View {
                               ? "Select another DXMT version before removing this one."
                               : "Remove this installed DXMT version.")
                         .disabled(store.setupBusy || package.folder.standardizedFileURL.path == currentPackagePath)
-                    }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                    }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
             Text("Available downloads").font(.headline)
@@ -499,7 +499,7 @@ struct DXMTVersionView: View {
                                         else { uncheckedAsset = asset }
                                     }.disabled(store.setupBusy)
                                 }
-                            }.padding(10).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                            }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                         }
                         if loading { ProgressView("Loading older releases…") }
                         if nextPage != nil { Button("Load older releases") { Task { await load(reset: false) } }.disabled(loading || store.setupBusy) }
