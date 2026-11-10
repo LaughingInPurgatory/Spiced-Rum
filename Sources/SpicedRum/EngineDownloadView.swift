@@ -12,6 +12,8 @@ struct EngineDownloadView: View {
     @State private var filter = ""
     @State private var nextPage: Int?
     @State private var legacyAsset: EngineAsset?
+    @State private var enginePendingRemoval: Runtime?
+    @State private var engineRemovalDescription = ""
     @State private var generation = UUID()
 
     var body: some View {
@@ -19,7 +21,7 @@ struct EngineDownloadView: View {
             Text("Download an engine").font(.title2.weight(.semibold))
             Text("Start with Wine Staging for most games. Spiced-Rum downloads the complete macOS engine, sets up available graphics components, and tests a Windows x64 environment before adding it.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Picker("Publisher", selection: $feed) { ForEach(EngineFeed.allCases) { Text($0.rawValue).tag($0) } }.disabled(store.setupBusy)
+            Picker("Engine source", selection: $feed) { ForEach(EngineFeed.allCases) { Text($0.rawValue).tag($0) } }.disabled(store.setupBusy)
             if feed == .whisky {
                 Text("This downloads the Wine Libraries runtime from the active Whisky community fork, not the Whisky app. Releases refresh from GitHub and install side by side. GPTK-capable releases need Apple's evaluation payload; Spiced-Rum finds and mounts its downloaded disk image or reuses an already installed GPTK payload, then keeps Apple's license files with the engine. These runtimes require macOS 15 or later.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -27,6 +29,14 @@ struct EngineDownloadView: View {
                     Text("This Mac is running an older macOS version; Whisky community runtimes cannot be installed here.")
                         .font(.caption).foregroundStyle(.orange)
                 }
+            }
+            if feed == .heroicGPTK {
+                Text("These are the macOS Apple Silicon GPTK builds Heroic downloads from Gcenx. They include D3DMetal and Apple's license files; Spiced-Rum keeps the full package together. This release stream may be older than Apple's latest toolkit, which remains available in the Apple Game Porting Toolkit setup section.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if feed == .wineCrossover {
+                Text("Heroic mirrors the latest Gcenx Wine-Crossover build for a small number of games that need it. The upstream project is no longer maintained, so try Wine Staging or GPTK first. This is not the paid CodeWeavers CrossOver app.")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             if feed == .sikarugir {
                 Text("Spiced-Rum automatically prepares support libraries for standalone-compatible builds. Wine 11 requires Sikarugir's own launcher and is currently unavailable here. Supported builds start with Wine default graphics; optional wrapper renderers are not enabled. Newest uploads appear first.").font(.caption).foregroundStyle(.secondary)
@@ -53,17 +63,14 @@ struct EngineDownloadView: View {
                                     if feed == .barrelWine, let tag = asset.releaseTag { Text("Wine build \(tag) · support libraries and latest DXMT set up automatically").font(.caption).foregroundStyle(.secondary) }
                                     if asset.id == assets.first(where: { $0.name.contains("wine-staging") && $0.verifiedDownload })?.id { Text("Recommended starting point").font(.caption).foregroundStyle(.orange) }
                                     if asset.requiresSikarugirLauncher { Text("Requires Sikarugir's launcher · not yet supported").font(.caption).foregroundStyle(.orange) }
-                                    if asset.requiresAppleGPTKPayload { Text("GPTK-capable · Apple's evaluation payload is attached automatically during install").font(.caption).foregroundStyle(.orange) }
+                                    if feed == .whisky && asset.requiresAppleGPTKPayload { Text("GPTK-capable · Apple's evaluation payload is attached automatically during install").font(.caption).foregroundStyle(.orange) }
                                     if asset.reportsSteamLoginIssue { Text("Preview caveat: this release reports that Steam login can stall. Keep another engine for Steam.").font(.caption).foregroundStyle(.orange) }
                                     Text("\(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file)) · \(asset.verifiedDownload ? "SHA-256 verified download" : "Publisher checksum unavailable")")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Button(asset.verifiedDownload ? "Install & set up" : "Install legacy download…") {
-                                    if asset.verifiedDownload { store.installEngine(asset, feed: feed) }
-                                    else { legacyAsset = asset }
-                                }.disabled(store.setupBusy || asset.requiresSikarugirLauncher || (feed == .whisky && ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 15))
-                            }.padding(12).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                                engineAction(for: asset)
+                            }.padding(12).rumGlassSurface(cornerRadius: 12)
                         }
                         if loading { ProgressView("Loading older releases…") }
                         if nextPage != nil {
@@ -83,7 +90,7 @@ struct EngineDownloadView: View {
                 }
             }
             if !store.setupBusy, let error = store.error { ScrollView { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }.frame(maxHeight: 100) }
-            Text("Older and newer engines install side by side. Existing shotglasses keep their engine until you choose Change engine. Spiced-Rum attaches the newest available Apple GPTK payload when installing a GPTK-capable Whisky release.").font(.caption).foregroundStyle(.secondary)
+            Text("Older and newer engines install side by side. Existing shotglasses keep their engine until you choose Change engine. Spiced-Rum attaches Apple's matching evaluation payload to GPTK-capable Whisky releases; the Heroic GPTK builds already include their matching graphics files.").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Refresh newest releases") { Task { await load() } }.disabled(loading || store.setupBusy)
                 Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.setupBusy)
@@ -97,6 +104,55 @@ struct EngineDownloadView: View {
         } message: {
             Text("This older download comes from the selected publisher's HTTPS release page, but has no published SHA-256 checksum. Spiced-Rum can record its checksum and test Windows startup, but cannot verify it against a publisher checksum. Install only if you trust this release.")
         }
+        .confirmationDialog("Remove this engine?", isPresented: Binding(
+            get: { enginePendingRemoval != nil },
+            set: { if !$0 { enginePendingRemoval = nil } }
+        ), titleVisibility: .visible) {
+            if let runtime = enginePendingRemoval {
+                Button("Remove engine", role: .destructive) {
+                    do { try store.removeRuntime(runtime) }
+                    catch { store.error = error.localizedDescription }
+                    enginePendingRemoval = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { enginePendingRemoval = nil }
+        } message: {
+            Text(engineRemovalDescription)
+        }
+    }
+
+    private func installedRuntime(for asset: EngineAsset) -> Runtime? {
+        let engines = store.support.appendingPathComponent("Engines", isDirectory: true)
+        return store.catalog.runtimes.first { runtime in
+            runtime.name == asset.installedName(in: feed)
+                && RuntimeManagement.managedEngineDirectory(for: runtime, inside: engines) != nil
+        }
+    }
+
+    @ViewBuilder
+    private func engineAction(for asset: EngineAsset) -> some View {
+        if let runtime = installedRuntime(for: asset) {
+            HStack(spacing: 10) {
+                Label("Installed", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.medium)).foregroundStyle(.green)
+                Button("Remove…") { requestEngineRemoval(runtime) }
+                    .disabled(store.setupBusy || !store.storageAvailable)
+            }
+        } else {
+            Button(asset.verifiedDownload ? "Install & set up" : "Install legacy download…") {
+                if asset.verifiedDownload { store.installEngine(asset, feed: feed) }
+                else { legacyAsset = asset }
+            }.disabled(store.setupBusy || asset.requiresSikarugirLauncher || (feed == .whisky && ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 15))
+        }
+    }
+
+    private func requestEngineRemoval(_ runtime: Runtime) {
+        if let blocker = store.runtimeRemovalBlocker(for: runtime) {
+            store.error = blocker
+            return
+        }
+        engineRemovalDescription = store.runtimeRemovalPrompt(for: runtime)
+        enginePendingRemoval = runtime
     }
 
     func load(reset: Bool = true) async {
@@ -360,7 +416,7 @@ struct DXVKVersionView: View {
                     else { uncheckedAsset = asset }
                 }.disabled(store.setupBusy)
             }
-        }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+        }.padding(10).rumGlassSurface(cornerRadius: 12)
     }
 
     @ViewBuilder
@@ -400,7 +456,7 @@ struct DXVKVersionView: View {
                   ? "Change the shotglass graphics selection before removing this version."
                   : "Remove this DXVK version")
             .disabled(store.setupBusy || isActive)
-        }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+        }.padding(10).rumGlassSurface(cornerRadius: 12)
     }
 
     private func uses(_ package: DXVKPackage, in entry: ShotglassEntry) -> Bool {
@@ -472,7 +528,7 @@ struct DXMTVersionView: View {
                               ? "Select another DXMT version before removing this one."
                               : "Remove this installed DXMT version.")
                         .disabled(store.setupBusy || package.folder.standardizedFileURL.path == currentPackagePath)
-                    }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                    }.padding(10).rumGlassSurface(cornerRadius: 12)
                 }
             }
             Text("Available downloads").font(.headline)
@@ -499,7 +555,7 @@ struct DXMTVersionView: View {
                                         else { uncheckedAsset = asset }
                                     }.disabled(store.setupBusy)
                                 }
-                            }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                            }.padding(10).rumGlassSurface(cornerRadius: 12)
                         }
                         if loading { ProgressView("Loading older releases…") }
                         if nextPage != nil { Button("Load older releases") { Task { await load(reset: false) } }.disabled(loading || store.setupBusy) }

@@ -206,7 +206,7 @@ struct SetupView: View {
                         Button("Reveal") { NSWorkspace.shared.selectFile(runtime.executable.path, inFileViewerRootedAtPath: "") }
                         Button("Remove…") { requestRuntimeRemoval(runtime) }
                             .disabled(store.setupBusy || !store.storageAvailable)
-                    }.padding(14).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                    }.padding(14).rumGlassSurface(cornerRadius: 12)
                 }
                 Divider()
                 Text("Explore macOS engines").font(.title3.weight(.semibold))
@@ -224,13 +224,13 @@ struct SetupView: View {
                             Spacer()
                             Button("Register installed engine…") { chosenSource = source; showRuntime = true }.disabled(!store.storageAvailable)
                         }
-                    }.padding(18).background(RumTheme.surfaceMuted, in: RoundedRectangle(cornerRadius: 12))
+                    }.padding(18).rumGlassSurface(cornerRadius: 12, fallback: RumTheme.surfaceMuted)
                 }
                 Text("Proton and GE-Proton target Linux. Their macOS-relevant patches and components need macOS builds; their Linux release archives cannot be registered as engines here.")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(34)
         }
-        .background(RumTheme.content)
+        .background { RumBackdrop() }
         .sheet(isPresented: $showRuntime) { AddRuntimeView(source: chosenSource) }
         .sheet(isPresented: $showDownload) { EngineDownloadView() }
         .sheet(isPresented: $showDXVKVersions) { DXVKVersionView() }
@@ -305,7 +305,7 @@ struct SetupView: View {
                         Spacer()
                         Button("Manage versions…") { graphicsRuntimeSource = source }
                             .disabled(store.setupBusy || !store.storageAvailable)
-                    }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                    }.padding(10).rumGlassSurface(cornerRadius: 12)
                 }
             }
 
@@ -337,7 +337,7 @@ struct SetupView: View {
                             }
                             Spacer()
                             Button("Manage versions…") { dxmtRuntime = runtime }.disabled(store.setupBusy || !store.storageAvailable)
-                        }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                        }.padding(10).rumGlassSurface(cornerRadius: 12)
                     }
                 }
             }
@@ -375,7 +375,7 @@ struct SetupView: View {
                                 Button("Install version") { store.setUpAppleGPTK(evaluationVersion: version) }
                                     .disabled(!matchingHost || store.setupBusy || !store.storageAvailable || ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 15)
                             }
-                        }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                        }.padding(10).rumGlassSurface(cornerRadius: 12)
                     }
                 }
                 Link("Find GPTK and evaluation versions at Apple ↗", destination: URL(string: "https://developer.apple.com/download/all/?q=game%20porting%20toolkit")!)

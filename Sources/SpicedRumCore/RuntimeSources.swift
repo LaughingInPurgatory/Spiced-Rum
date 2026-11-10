@@ -50,14 +50,19 @@ public enum RuntimeDiscovery {
         let fm = FileManager.default
         let launchers = [wineRoot.appendingPathComponent("bin/wine64"), wineRoot.appendingPathComponent("bin/wine")]
         guard let launcher = launchers.first(where: { fm.isExecutableFile(atPath: $0.path) }) else { return nil }
-        let metal = [
+        guard hasD3DMetal(in: wineRoot),
+              fm.isExecutableFile(atPath: launcher.deletingLastPathComponent().appendingPathComponent("wineserver").path) else { return nil }
+        return Runtime(name: "Apple Game Porting Toolkit", executable: launcher, useRosetta: true, d3dMetal: true, version: version)
+    }
+
+    public static func hasD3DMetal(in wineRoot: URL) -> Bool {
+        let fm = FileManager.default
+        return [
             wineRoot.appendingPathComponent("lib/external/D3DMetal.framework", isDirectory: true),
             wineRoot.appendingPathComponent("lib/D3DMetal.framework", isDirectory: true)
         ].contains { fm.fileExists(atPath: $0.appendingPathComponent("Versions/Current/D3DMetal").path)
+            || fm.fileExists(atPath: $0.appendingPathComponent("Versions/A/D3DMetal").path)
             || fm.fileExists(atPath: $0.appendingPathComponent("D3DMetal").path) }
-        guard metal,
-              fm.isExecutableFile(atPath: launcher.deletingLastPathComponent().appendingPathComponent("wineserver").path) else { return nil }
-        return Runtime(name: "Apple Game Porting Toolkit", executable: launcher, useRosetta: true, d3dMetal: true, version: version)
     }
 
     private static func bundleVersion(in app: URL) -> String {
@@ -73,6 +78,8 @@ public enum RuntimeDiscovery {
 public enum RuntimeSource: String, CaseIterable, Identifiable {
     case sikarugir = "Sikarugir / Kegworks"
     case gptk = "Apple Game Porting Toolkit"
+    case heroicGPTK = "GPTK · Heroic macOS builds"
+    case wineCrossover = "Wine-Crossover · Heroic mirror"
     case staging = "Wine Staging for macOS"
     case stable = "Wine Stable / Devel for macOS"
     case whisky = "Whisky community Wine"
@@ -83,6 +90,8 @@ public enum RuntimeSource: String, CaseIterable, Identifiable {
         switch self {
         case .sikarugir: address = "https://github.com/Sikarugir-App/Engines/releases"
         case .gptk: address = "https://developer.apple.com/games/game-porting-toolkit/"
+        case .heroicGPTK: address = "https://github.com/Gcenx/game-porting-toolkit/releases"
+        case .wineCrossover: address = "https://github.com/Heroic-Games-Launcher/wine-crossover/releases"
         case .staging, .stable, .custom: address = "https://github.com/Gcenx/macOS_Wine_builds/releases"
         case .whisky: address = "https://github.com/frankea/Whisky/releases"
         }
@@ -92,6 +101,8 @@ public enum RuntimeSource: String, CaseIterable, Identifiable {
         switch self {
         case .sikarugir: return "macOS engine family"
         case .gptk: return "Apple evaluation tools"
+        case .heroicGPTK: return "Community GPTK builds"
+        case .wineCrossover: return "Legacy compatibility option"
         case .staging: return "Additional compatibility patches"
         case .stable: return "Upstream macOS builds"
         case .whisky: return "Community-maintained Wine runtime"
@@ -104,6 +115,10 @@ public enum RuntimeSource: String, CaseIterable, Identifiable {
             return "Successor to Wineskin/Kegworks, with macOS-specific engines. Use Download engine for automatic runtime-library setup and an x64 startup test. Advanced imports must already include the wrapper's required libraries. Wine 11 requires the publisher's launcher and is not supported here yet. Optional wrapper renderers are not enabled automatically. Older GPTK and Whisky engines are listed as unsupported by the publisher."
         case .gptk:
             return "Spiced-Rum detects Apple's installed Wine host and automatically looks for a downloaded evaluation-environment disk image. It mounts the image read-only, creates a separate GPTK runtime with the matching D3DMetal libraries, and verifies Windows x64 startup without changing Apple's app. GPTK 4 requires macOS 15 or later; Apple's included license applies."
+        case .heroicGPTK:
+            return "Gcenx's macOS GPTK builds are also available through Heroic. They include their matching D3DMetal files and Apple license documents, which Spiced-Rum keeps with the installed engine. These community releases may trail Apple's newest toolkit; use Apple Game Porting Toolkit setup above for Apple's latest release. Requires Apple Silicon and Rosetta 2."
+        case .wineCrossover:
+            return "Heroic mirrors the latest Gcenx Wine-Crossover build because a few games work better with it. The upstream project is no longer maintained, so try Wine Staging or GPTK first. This is a free legacy Wine build, not CodeWeavers' paid CrossOver."
         case .staging:
             return "Gcenx's macOS WineHQ packages include Wine Staging, with patches beyond stable Wine. Select wine inside the extracted Wine Staging.app bundle. These packages include MoltenVK; DXVK is selected separately per shotglass."
         case .stable:

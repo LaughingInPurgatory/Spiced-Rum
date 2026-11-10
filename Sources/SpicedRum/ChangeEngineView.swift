@@ -45,7 +45,7 @@ struct ChangeEngineView: View {
                             Spacer()
                             Button("Restore") { restoring = backup }
                             Button("Delete backup", role: .destructive) { deleting = backup }
-                        }.padding(10).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                        }.padding(10).rumGlassSurface(cornerRadius: 12)
                     }
                 }
             }.frame(maxHeight: 160)

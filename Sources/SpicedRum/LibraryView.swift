@@ -18,6 +18,8 @@ private struct SidebarActionButton: View {
         .buttonStyle(.plain)
         .foregroundStyle(RumTheme.accent)
         .disabled(disabled)
+        .padding(4)
+        .rumGlassControl(active: hovering)
         .help(title)
         .accessibilityLabel(title)
         .onHover { hovering = $0 }
@@ -29,8 +31,7 @@ private struct SidebarActionButton: View {
                     .fixedSize()
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.10)))
+                    .rumGlassSurface(cornerRadius: 8)
                     .offset(y: -30)
                     .allowsHitTesting(false)
                     .transition(.opacity)
@@ -59,7 +60,7 @@ struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.fontWeight(.medium).foregroundStyle(RumTheme.onAccent)
             .padding(.horizontal, 14).padding(.vertical, 9)
-            .background(RumTheme.accent.opacity(configuration.isPressed ? 0.82 : 1), in: Capsule())
+            .modifier(RumPrimaryButtonGlass(isPressed: configuration.isPressed))
             .opacity(enabled ? 1 : 0.45)
     }
 }
@@ -174,7 +175,7 @@ struct LibraryView: View {
                                     .disabled(store.busy.contains(entry.id))
                                 }
                                 .padding(.horizontal, 8).padding(.vertical, 6)
-                                .background(store.selection == entry.id ? RumTheme.selection : .clear, in: RoundedRectangle(cornerRadius: 14))
+                                .modifier(RumGlassSelection(isSelected: store.selection == entry.id))
                                 .contextMenu {
                                     Button("Rename…", systemImage: "pencil") { editingShotglass = ShotglassEditRequest(entry: entry, mode: .rename) }
                                         .disabled(store.busy.contains(entry.id))
@@ -190,7 +191,7 @@ struct LibraryView: View {
                     }.frame(maxHeight: .infinity)
                 }.padding(.horizontal, 10)
                 Spacer()
-            }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity).background(RumTheme.background)
+            }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationSplitViewColumnWidth(270)
         } detail: {
             ZStack {
@@ -200,7 +201,7 @@ struct LibraryView: View {
                     } else {
                         shotglassSelectionEmptyState
                     }
-                }.background(RumTheme.content)
+                }.background { RumBackdrop() }
 
                 if showStartupIntro && !reduceMotion {
                     RumPouringIntroView {
@@ -311,7 +312,7 @@ struct ShotglassDetail: View {
                 if entry.shotglass.programs.isEmpty {
                     Text("Run a Windows installer, then add its installed .exe here. Heroic setup files are extracted directly to bypass its unreliable running-app check.")
                         .font(.callout).foregroundStyle(.secondary).padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RumTheme.surfaceMuted, in: RoundedRectangle(cornerRadius: 12))
+                        .rumGlassSurface(cornerRadius: 12, fallback: RumTheme.surfaceMuted)
                 }
                 ForEach(entry.shotglass.programs) { program in
                         HStack(spacing: 12) {
@@ -369,7 +370,7 @@ struct ShotglassDetail: View {
                             }
                             Button("Remove shortcut") { store.removeProgram(program, from: entry) }
                         } label: { Image(systemName: "ellipsis") }.fixedSize()
-                    }.padding(12).background(RumTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                    }.padding(12).rumGlassSurface(cornerRadius: 12)
                 }
             }
             Text(entry.folder.path).font(.caption).foregroundStyle(.tertiary).textSelection(.enabled)

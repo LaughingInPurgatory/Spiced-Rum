@@ -19,6 +19,8 @@ public struct EngineAsset: Decodable, Identifiable, Hashable {
         switch feed {
         case .whisky: return releaseName ?? releaseTag ?? name
         case .barrelWine: return releaseTag?.replacingOccurrences(of: "wine-cx-", with: "CrossOver ") ?? name
+        case .heroicGPTK: return releaseName ?? releaseTag ?? name
+        case .wineCrossover: return "Wine-Crossover " + (releaseTag ?? releaseName ?? name)
         default: return name
         }
     }
@@ -27,6 +29,8 @@ public struct EngineAsset: Decodable, Identifiable, Hashable {
         if feed == .barrelWine {
             return "Barrel Wine · " + (releaseTag?.replacingOccurrences(of: "wine-cx-", with: "CrossOver ") ?? name)
         }
+        if feed == .heroicGPTK { return "GPTK · Heroic " + (releaseTag ?? name) }
+        if feed == .wineCrossover { return "Wine-Crossover · Heroic " + (releaseTag ?? name) }
         guard feed == .whisky else {
             return name.replacingOccurrences(of: ".tar.xz", with: "").replacingOccurrences(of: ".tar.gz", with: "")
         }
@@ -146,6 +150,8 @@ private struct DXMTPackageReceipt: Codable {
 
 public enum EngineFeed: String, CaseIterable, Identifiable {
     case wineHQ = "Wine Staging / Stable / Devel"
+    case heroicGPTK = "GPTK · Heroic macOS builds"
+    case wineCrossover = "Wine-Crossover · Heroic mirror"
     case sikarugir = "Sikarugir engines"
     case whisky = "Whisky community Wine Libraries"
     case barrelWine = "Barrel Wine · CrossOver"
@@ -153,6 +159,8 @@ public enum EngineFeed: String, CaseIterable, Identifiable {
     public var repository: String {
         switch self {
         case .wineHQ: return "Gcenx/macOS_Wine_builds"
+        case .heroicGPTK: return "Gcenx/game-porting-toolkit"
+        case .wineCrossover: return "Heroic-Games-Launcher/wine-crossover"
         case .sikarugir: return "Sikarugir-App/Engines"
         case .whisky: return "frankea/Whisky"
         case .barrelWine: return "MrTuNNe/Barrel"
@@ -421,6 +429,20 @@ public enum EngineInstaller {
             && asset.browser_download_url.host?.lowercased() == "github.com"
             && asset.browser_download_url.path.lowercased().hasPrefix("/mrtunne/barrel/releases/download/")
             && name.range(of: #"^barrel-wine-[0-9]+(?:\.[0-9]+)+\.tar\.xz$"#, options: .regularExpression) != nil
+    }
+
+    static func isHeroicGPTKAsset(_ asset: EngineAsset) -> Bool {
+        let name = asset.name.lowercased()
+        return asset.browser_download_url.host?.lowercased() == "github.com"
+            && asset.browser_download_url.path.lowercased().hasPrefix("/gcenx/game-porting-toolkit/releases/download/")
+            && name.range(of: #"^game-porting-toolkit-[a-z0-9._-]+\.tar\.xz$"#, options: .regularExpression) != nil
+    }
+
+    static func isHeroicWineCrossoverAsset(_ asset: EngineAsset) -> Bool {
+        let name = asset.name.lowercased()
+        return asset.browser_download_url.host?.lowercased() == "github.com"
+            && asset.browser_download_url.path.lowercased().hasPrefix("/heroic-games-launcher/wine-crossover/releases/download/")
+            && name.range(of: #"^wine-crossover-[0-9][a-z0-9._-]*\.tar\.xz$"#, options: .regularExpression) != nil
     }
 
     public static func dxvkReleases(source: DXVKSource = .gcenx, page: Int = 1) async throws -> EngineReleasePage {
@@ -778,6 +800,8 @@ public enum EngineInstaller {
             switch feed {
             case .whisky: feedArchive = name.contains("libraries") && name.hasSuffix(".tar.gz")
             case .barrelWine: feedArchive = isBarrelWineAsset($0)
+            case .heroicGPTK: feedArchive = isHeroicGPTKAsset($0)
+            case .wineCrossover: feedArchive = isHeroicWineCrossoverAsset($0)
             default: feedArchive = supportedArchive
             }
             return feedArchive && !name.contains("32bit") && seen.insert($0.id).inserted
@@ -1138,6 +1162,8 @@ public enum EngineInstaller {
         guard asset.verifiedDownload || allowUnverified else { throw RumError.message("This older release has no publisher checksum. Choose Install legacy download and review the explanation to install it from the publisher.") }
         guard asset.browser_download_url.scheme == "https", asset.browser_download_url.host == "github.com", asset.browser_download_url.path.lowercased().hasPrefix("/\(feed.repository.lowercased())/releases/download/"), asset.size > 0, asset.size < 2_000_000_000 else { throw RumError.message("The release asset has an unexpected URL or size.") }
         if feed == .barrelWine, !isBarrelWineAsset(asset) { throw RumError.message("This is not a supported Barrel Wine CrossOver engine release.") }
+        if feed == .heroicGPTK, !isHeroicGPTKAsset(asset) { throw RumError.message("This is not a supported macOS Game Porting Toolkit release.") }
+        if feed == .wineCrossover, !isHeroicWineCrossoverAsset(asset) { throw RumError.message("This is not a supported Wine-Crossover release from Heroic's macOS mirror.") }
         let fm = FileManager.default
         try fm.createDirectory(at: engines, withIntermediateDirectories: true)
         let staging = engines.appendingPathComponent(".install-" + UUID().uuidString, isDirectory: true)
@@ -1171,6 +1197,14 @@ public enum EngineInstaller {
         try Task.checkCancellation()
         update("Checking macOS Wine…", nil)
         var runtime = Runtime(name: asset.installedName(in: feed), executable: wine, useRosetta: true, d3dMetal: false, version: "")
+        if feed == .heroicGPTK {
+            let wineRoot = wine.deletingLastPathComponent().deletingLastPathComponent()
+            guard RuntimeDiscovery.hasD3DMetal(in: wineRoot) else {
+                throw RumError.message("The GPTK archive is missing its D3DMetal framework. It has not been registered as an engine.")
+            }
+            runtime.d3dMetal = true
+            runtime.gptkVersion = asset.releaseTag ?? asset.releaseName
+        }
         if feed == .sikarugir {
             try validateStandaloneSikarugir(wine)
             runtime.executable = try await setupSikarugir(runtime, update: update)

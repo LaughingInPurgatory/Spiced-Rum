@@ -39,6 +39,7 @@ A **shotglass** is one game's or app's own Windows setup. Its files, settings an
 Click the gear in the left side of the main window to open **Settings**. Choose **Download engine…**, pick a source and version, and let Spiced-Rum set it up. The first setup can take a while. Spiced-Rum checks that Wine can start a basic Windows environment when it finishes.
 
 You can install more than one version. Keeping an older version around is useful when a game stops working after an engine update.
+The download list marks versions that are already installed and lets you remove an unused engine there or in Settings.
 
 ### Create a shotglass
 
@@ -57,10 +58,11 @@ Your shotglasses are listed on the left. The buttons above the list add, import 
 Select a shotglass to see its engine, graphics settings and saved shortcuts. From there you can launch an app, run another installer, install Windows components, change engines, view files and logs, or force-stop that shotglass's Wine processes. Force Stop can lose unsaved game progress, but it does not stop other shotglasses.
 
 Use the gear button to open Settings in its own macOS window. You can drag it by its title bar and close it with the standard macOS close button. Settings is where you manage engines, graphics downloads, dependency tools, video support and the default location for new shotglasses.
+On macOS 26 and later, custom controls and panels use Apple's Liquid Glass appearance; older macOS releases keep the compatible dark style.
 
 ## Engines and graphics
 
-Spiced-Rum gets macOS builds from a few projects. It can install Apple's Game Porting Toolkit when you have the matching Apple Wine host and evaluation image, check Gcenx's Homebrew package when it matches that image, and download Barrel Wine, Wine Staging/Stable/Devel, Whisky community Wine and selected Sikarugir releases. Advanced users can register a complete macOS Wine engine. Linux builds of Wine, Proton and DXVK are not macOS engines.
+Spiced-Rum gets macOS builds from a few projects. It can install Apple's Game Porting Toolkit when you have the matching Apple Wine host and evaluation image, check Gcenx's Homebrew package when it matches that image, and download Barrel Wine, Wine Staging/Stable/Devel, Whisky community Wine, selected Sikarugir releases, and Gcenx's macOS GPTK and Wine-Crossover builds mirrored by Heroic. Advanced users can register a complete macOS Wine engine. Linux builds of Wine, Proton and DXVK are not macOS engines.
 
 Graphics choices depend on the engine. A shotglass can use Wine's built-in Direct3D 12 support, MoltenVK for Vulkan when the engine includes it, or other supported options such as D3DMetal, DXMT, DXVK, mtld3d and Zink. The Graphics panel only offers combinations the selected engine can use.
 
@@ -89,7 +91,7 @@ Shotglasses keep their files separate, but they are not security sandboxes. Only
 
 Download the latest `.zip` from [Releases](https://github.com/LaughingInPurgatory/Spiced-Rum/releases/latest), expand it and move **Spiced-Rum.app** to Applications.
 
-The app is signed with my self-signed certificate, not an Apple Developer ID, and it is not notarized. macOS may ask you to approve it the first time you open it. Other Macs will not automatically trust this certificate. [Apple's instructions](https://support.apple.com/en-gb/guide/mac-help/mh40617/27/mac/27) explain how to open an app that macOS cannot verify.
+The release app is ad-hoc signed, not signed with an Apple Developer ID, and not notarized. macOS may ask you to approve it the first time you open it. [Apple's instructions](https://support.apple.com/en-gb/guide/mac-help/mh40617/27/mac/27) explain how to open an app that macOS cannot verify.
 
 ## Reporting a problem
 
